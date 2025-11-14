@@ -2,6 +2,8 @@
 build/
 .devenv/
 .direnv/
+vcpkg/
+vcpkg_installed/
 
 # Auto-generated devenv files
 .devenv.flake.nix

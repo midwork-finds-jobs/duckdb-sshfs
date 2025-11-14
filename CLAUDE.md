@@ -313,7 +313,7 @@ Enable DuckDB to efficiently read and write large datasets (parquet files, CSV e
 
 ### The Solution: duckdb-sshfs Extension
 
-This extension implements a custom DuckDB FileSystem that treats SSH/SFTP servers as first-class storage backends, accessible via `sshfs://` URLs.
+This extension implements a custom DuckDB FileSystem that treats SSH/SFTP servers as first-class storage backends, accessible via `ssh://` or `sshfs://` URLs.
 
 #### Architecture
 
@@ -325,7 +325,7 @@ This extension implements a custom DuckDB FileSystem that treats SSH/SFTP server
                     │ FileSystem API
 ┌───────────────────▼─────────────────────────────────────┐
 │              SSHFSFileSystem                            │
-│  • URL parsing (sshfs://user@host:port/path)           │
+│  • URL parsing (ssh://[user@]host:port/path)           │
 │  • Connection pooling (reuse SSH connections)           │
 │  • Credential management (DuckDB secrets)               │
 │  • Configuration (chunk size, timeouts, retries)        │
@@ -362,7 +362,7 @@ This extension implements a custom DuckDB FileSystem that treats SSH/SFTP server
 
 **Responsibilities:**
 
-* Parse `sshfs://[user@]host[:port]/path` URLs
+* Parse `ssh://[user@]host[:port]/path` or `sshfs://[user@]host[:port]/path` URLs (username optional, can be in secret)
 * Extract credentials from DuckDB secrets
 * Maintain connection pool (one SSH client per host/user combination)
 * Validate connections before reuse

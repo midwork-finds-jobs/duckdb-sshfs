@@ -1,0 +1,46 @@
+# name: test/sql/sshfs/host_alias.test
+# description: Test host alias resolution (like ~/.ssh/config)
+# group: [sshfs]
+
+require sshfs
+
+require-env SSHFS_TEST_SERVER_AVAILABLE 1
+
+require-env SSHFS_TEST_USERNAME
+
+require-env SSHFS_TEST_PORT
+
+# Override default behaviour of skipping errors
+set ignore_error_messages
+
+# Test: Create an SSH secret with host alias that resolves to actual hostname
+statement ok
+CREATE SECRET sshfs_alias_test (
+    TYPE SSH,
+    USERNAME '${SSHFS_TEST_USERNAME}',
+    KEY_PATH 'scripts/test-ssh-key',
+    PORT ${SSHFS_TEST_PORT},
+    HOST 'myserver',
+    HOSTNAME 'localhost'
+);
+
+# Verify the secret was created
+query I
+SELECT count(*) FROM duckdb_secrets() WHERE name = 'sshfs_alias_test';
+----
+1
+
+# Test: Use the host alias in the URL instead of the actual hostname
+statement ok
+CREATE TABLE test_alias AS SELECT 1 as id, 'HostAlias' as name, 300 as value;
+
+# Use the alias 'myserver' instead of 'localhost'
+statement ok
+COPY test_alias TO 'sshfs://${SSHFS_TEST_USERNAME}@myserver:${SSHFS_TEST_PORT}/upload/test_alias.csv' (HEADER, DELIMITER ',');
+
+# Cleanup
+statement ok
+DROP TABLE test_alias;
+
+statement ok
+DROP SECRET sshfs_alias_test;

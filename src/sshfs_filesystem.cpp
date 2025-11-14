@@ -195,7 +195,8 @@ vector<OpenFileInfo> SSHFSFileSystem::Glob(const string &path,
 }
 
 bool SSHFSFileSystem::CanHandleFile(const string &fpath) {
-  return StringUtil::StartsWith(fpath, "sshfs://");
+  return StringUtil::StartsWith(fpath, "sshfs://") ||
+         StringUtil::StartsWith(fpath, "ssh://");
 }
 
 timestamp_t SSHFSFileSystem::GetLastModifiedTime(FileHandle &handle) {
@@ -240,16 +241,25 @@ SSHConnectionParams SSHFSFileSystem::ParseURL(const string &path,
                                               FileOpener *opener) {
   SSHConnectionParams params;
 
-  // Parse sshfs://[username@]hostname[:port]/path/to/file
-  std::regex url_regex(R"(sshfs://(?:([^@]+)@)?([^:/]+)(?::(\d+))?(/.*))");
+  // Parse ssh://[username@]hostname[:port]/path/to/file or sshfs://...
+  // Support both ssh:// and sshfs:// prefixes
+  // Username is optional - can be provided via secret
+  std::regex url_regex(
+      R"((?:ssh|sshfs)://(?:([^@]+)@)?([^:/]+)(?::(\d+))?(/.*))");
   std::smatch matches;
 
   if (!std::regex_match(path, matches, url_regex)) {
-    throw IOException("Invalid SSHFS URL format: %s. Expected: "
+    throw IOException("Invalid SSH/SSHFS URL format: %s. Expected: "
+                      "ssh://[username@]hostname[:port]/path or "
                       "sshfs://[username@]hostname[:port]/path",
                       path);
   }
 
+  // Extract the URL prefix (ssh:// or sshfs://) for secret lookups
+  std::string url_prefix =
+      StringUtil::StartsWith(path, "ssh://") ? "ssh://" : "sshfs://";
+
+  // Username is optional in URL - can be provided via secret
   if (matches[1].matched) {
     params.username = matches[1].str();
   }
@@ -268,6 +278,46 @@ SSHConnectionParams SSHFSFileSystem::ParseURL(const string &path,
     }
   }
 
+  // Resolve host alias to actual hostname (like ~/.ssh/config)
+  // Check if the hostname from URL matches a "host" in any secret
+  std::string original_host_alias = params.hostname;
+  bool host_alias_resolved = false;
+
+  if (opener) {
+    try {
+      auto secret_manager = FileOpener::TryGetSecretManager(opener);
+      if (secret_manager) {
+        auto transaction = FileOpener::TryGetCatalogTransaction(opener);
+        if (transaction) {
+          // Look up secret by the host alias using the same prefix as the URL
+          auto secret_match = secret_manager->LookupSecret(
+              *transaction, url_prefix + original_host_alias, "ssh");
+
+          if (secret_match.HasMatch()) {
+            auto &base_secret = secret_match.GetSecret();
+            auto *secret = dynamic_cast<const KeyValueSecret *>(&base_secret);
+            if (secret) {
+              Value value;
+              // Check if this secret has a "host" parameter matching our alias
+              if (secret->TryGetValue("host", value)) {
+                std::string secret_host = value.ToString();
+                if (secret_host == original_host_alias) {
+                  // This secret matches! Now check for "hostname" to resolve
+                  if (secret->TryGetValue("hostname", value)) {
+                    params.hostname = value.ToString();
+                    host_alias_resolved = true;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (...) {
+      // Ignore errors during host alias resolution
+    }
+  }
+
   // Try to get credentials from secrets if opener is provided
   if (opener) {
     try {
@@ -275,8 +325,9 @@ SSHConnectionParams SSHFSFileSystem::ParseURL(const string &path,
       if (secret_manager) {
         auto transaction = FileOpener::TryGetCatalogTransaction(opener);
         if (transaction) {
+          // Look up secret using the same prefix as the URL for SCOPE matching
           auto secret_match = secret_manager->LookupSecret(
-              *transaction, "sshfs://" + params.hostname, "ssh");
+              *transaction, url_prefix + params.hostname, "ssh");
 
           if (secret_match.HasMatch()) {
             auto &base_secret = secret_match.GetSecret();
@@ -370,8 +421,9 @@ SSHConnectionParams SSHFSFileSystem::ParseURL(const string &path,
   }
 
   // Validate that we have required authentication info
+  // Username can be provided in URL or in secret
   if (params.username.empty()) {
-    throw IOException("SSHFS URL must include username");
+    throw IOException("SSHFS requires username (provide in URL or secret)");
   }
 
   if (params.password.empty() && params.key_path.empty()) {

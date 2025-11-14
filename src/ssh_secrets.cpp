@@ -40,6 +40,8 @@ void CreateSSHSecretFunctions::Register(ExtensionLoader &loader) {
   ssh_config_fun.named_parameters["password"] = LogicalType::VARCHAR;
   ssh_config_fun.named_parameters["key_path"] = LogicalType::VARCHAR;
   ssh_config_fun.named_parameters["port"] = LogicalType::INTEGER;
+  ssh_config_fun.named_parameters["host"] = LogicalType::VARCHAR;
+  ssh_config_fun.named_parameters["hostname"] = LogicalType::VARCHAR;
 
   // Register the function with the secret manager
   auto &db = loader.GetDatabaseInstance();

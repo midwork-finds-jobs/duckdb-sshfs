@@ -54,7 +54,19 @@ TO 'sshfs://u123456.your-storagebox.de/data.csv';
 ### URL Format
 
 ```text
+ssh://[username@]hostname[:port]/path/to/file
 sshfs://[username@]hostname[:port]/path/to/file
+```
+
+Both `ssh://` and `sshfs://` prefixes are supported. Username is optional in the URL - it can be provided via a secret instead:
+
+```sql
+-- With username in URL
+COPY data TO 'ssh://user@host/path/file.csv';
+
+-- Without username in URL (provided via secret)
+CREATE SECRET ssh_creds (TYPE SSH, USERNAME 'user', KEY_PATH '~/.ssh/id_rsa');
+COPY data TO 'ssh://host/path/file.csv';
 ```
 
 ### Configuration Options

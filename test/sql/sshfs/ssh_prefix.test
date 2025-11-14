@@ -1,0 +1,49 @@
+# name: test/sql/sshfs/ssh_prefix.test
+# description: Test ssh:// prefix support (in addition to sshfs://)
+# group: [sshfs]
+
+require sshfs
+
+require-env SSHFS_TEST_SERVER_AVAILABLE 1
+
+require-env SSHFS_TEST_USERNAME
+
+require-env SSHFS_TEST_PORT
+
+# Override default behaviour of skipping errors
+set ignore_error_messages
+
+# Test: Create an SSH secret for authentication
+statement ok
+CREATE SECRET sshfs_prefix_test (
+    TYPE SSH,
+    USERNAME '${SSHFS_TEST_USERNAME}',
+    KEY_PATH 'scripts/test-ssh-key',
+    PORT ${SSHFS_TEST_PORT}
+);
+
+# Verify the secret was created
+query I
+SELECT count(*) FROM duckdb_secrets() WHERE name = 'sshfs_prefix_test';
+----
+1
+
+# Test: Use ssh:// prefix instead of sshfs://
+statement ok
+CREATE TABLE test_ssh_prefix AS SELECT 1 as id, 'SSHPrefix' as name, 400 as value
+UNION ALL SELECT 2, 'Test', 500;
+
+# Use ssh:// prefix
+statement ok
+COPY test_ssh_prefix TO 'ssh://${SSHFS_TEST_USERNAME}@localhost:${SSHFS_TEST_PORT}/upload/test_ssh_prefix.csv' (HEADER, DELIMITER ',');
+
+# Test: Verify sshfs:// prefix still works
+statement ok
+COPY test_ssh_prefix TO 'sshfs://${SSHFS_TEST_USERNAME}@localhost:${SSHFS_TEST_PORT}/upload/test_sshfs_prefix.csv' (HEADER, DELIMITER ',');
+
+# Cleanup
+statement ok
+DROP TABLE test_ssh_prefix;
+
+statement ok
+DROP SECRET sshfs_prefix_test;
