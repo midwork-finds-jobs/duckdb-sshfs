@@ -84,12 +84,110 @@ COPY data TO 'ssh://host/path/file.csv';
 
 ## Development
 
+### Building with vcpkg
+
+This extension uses vcpkg for dependency management (libssh2 and OpenSSL). The build process automatically handles vcpkg integration.
+
+#### Development Prerequisites
+
+- Git
+- CMake 3.5+
+- Ninja build system
+- C++17 compatible compiler
+
+#### Build Steps
+
+1. **Clone the repository with submodules**
+
+   ```bash
+   git clone --recurse-submodules https://github.com/yourusername/duckdb-sshfs.git
+   cd duckdb-sshfs
+   ```
+
+2. **Set up vcpkg**
+
+   ```bash
+   # Clone vcpkg (if not already done)
+   git clone https://github.com/microsoft/vcpkg.git
+
+   # Checkout the specific version used by DuckDB extension CI
+   cd vcpkg
+   git checkout 5e5d0e1cd7785623065e77eff011afdeec1a3574
+
+   # Bootstrap vcpkg
+   ./bootstrap-vcpkg.sh  # On macOS/Linux
+   # OR
+   .\bootstrap-vcpkg.bat  # On Windows
+
+   cd ..
+   ```
+
+3. **Install dependencies**
+
+   ```bash
+   # vcpkg will automatically install libssh2 and openssl based on vcpkg.json
+   ./vcpkg/vcpkg install --triplet=arm64-osx  # macOS ARM64
+   # OR
+   ./vcpkg/vcpkg install --triplet=x64-linux  # Linux x64
+   # OR
+   ./vcpkg/vcpkg install --triplet=x64-windows  # Windows x64
+   ```
+
+4. **Build the extension**
+
+   ```bash
+   # Set environment variables
+   export GEN=ninja
+   export VCPKG_TOOLCHAIN_PATH=$(pwd)/vcpkg/scripts/buildsystems/vcpkg.cmake
+   export VCPKG_TARGET_TRIPLET=arm64-osx  # Or x64-linux, x64-windows, etc.
+
+   # Build release version
+   make release
+
+   # The built extension will be at:
+   # build/release/extension/sshfs/sshfs.duckdb_extension
+   ```
+
 ### Testing
 
+#### Run all tests
+
 ```bash
-# Run unit tests
-./build/test/unittest
+make test
 ```
+
+#### Run specific test files
+
+```bash
+./build/release/test/unittest 'test/sql/sshfs/*'
+```
+
+#### Run SSHFS integration tests with Docker
+
+```bash
+# Start SSH test server
+./scripts/run_sshfs_test_server.sh
+
+# Set test environment variables
+export SSHFS_TEST_SERVER_AVAILABLE=1
+export SSHFS_TEST_USERNAME=duckdb_sshfs_user
+export SSHFS_TEST_PORT=2222
+
+# Run tests
+./build/release/test/unittest 'test/sql/sshfs/*'
+
+# Stop test server
+./scripts/stop_sshfs_test_server.sh
+```
+
+### vcpkg Dependencies
+
+The extension requires the following packages (defined in `vcpkg.json`):
+
+- **libssh2**: SSH2 protocol implementation
+- **openssl**: Cryptography and SSL/TLS toolkit
+
+These are automatically installed when building with the vcpkg toolchain.
 
 ## Contributing
 
