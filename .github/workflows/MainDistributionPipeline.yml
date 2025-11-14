@@ -17,6 +17,7 @@ jobs:
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.4.2
     with:
       duckdb_version: v1.4.2
+      exclude_archs: "windows_amd64_mingw;windows_amd64"
       ci_tools_version: v1.4.2
       extension_name: sshfs
 
