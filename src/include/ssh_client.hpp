@@ -1,0 +1,90 @@
+#pragma once
+
+#include "duckdb.hpp"
+#include <condition_variable>
+#include <libssh2.h>
+#include <libssh2_sftp.h>
+#include <memory>
+#include <mutex>
+#include <queue>
+#include <string>
+
+namespace duckdb {
+
+struct SSHConnectionParams {
+  std::string hostname;
+  int port = 22;
+  std::string username;
+  std::string password;
+  std::string key_path;
+  std::string remote_path; // Path on the remote server
+
+  // Debug logging
+  bool debug_logging = false;
+
+  // Connection tuning
+  int timeout_seconds = 300; // 5 minutes for long uploads
+  int max_retries = 3;       // Maximum connection retry attempts
+  int initial_retry_delay_ms =
+      1000; // Initial delay between retries (exponential backoff)
+
+  // Upload performance tuning
+  size_t chunk_size = 50 * 1024 * 1024; // 50MB default chunk size
+  size_t max_concurrent_uploads = 2;    // Conservative for SFTP
+};
+
+class SSHClient {
+public:
+  explicit SSHClient(const SSHConnectionParams &params);
+  ~SSHClient();
+
+  // Connection management
+  void Connect();
+  void Disconnect();
+  bool IsConnected() const { return connected; }
+  bool ValidateConnection();
+  LIBSSH2_SESSION *GetSession() const { return session; }
+
+  // Command execution
+  std::string ExecuteCommand(const std::string &command);
+
+  // File operations
+  void UploadChunk(const std::string &remote_path, const char *data,
+                   size_t size, bool append = false);
+  void AppendChunk(const std::string &remote_path,
+                   const std::string &chunk_path);
+  void RemoveFile(const std::string &remote_path);
+  void RenameFile(const std::string &source_path,
+                  const std::string &target_path);
+  LIBSSH2_SFTP_ATTRIBUTES GetFileStats(const std::string &remote_path);
+
+  // Read operations using dd
+  size_t ReadBytes(const std::string &remote_path, char *buffer, size_t offset,
+                   size_t length);
+
+  // SFTP session pooling for efficient uploads
+  LIBSSH2_SFTP *BorrowSFTPSession();
+  void ReturnSFTPSession(LIBSSH2_SFTP *sftp);
+
+private:
+  SSHConnectionParams params;
+  int sock = -1;
+  LIBSSH2_SESSION *session = nullptr;
+  bool connected = false;
+  std::mutex upload_mutex; // Protect concurrent SFTP operations
+
+  // SFTP session pool
+  std::queue<LIBSSH2_SFTP *> sftp_pool;
+  std::mutex pool_mutex;
+  std::condition_variable pool_cv;
+  size_t pool_size = 2; // Match max_concurrent_uploads
+  bool pool_initialized = false;
+
+  void InitializeSession();
+  void Authenticate();
+  void CleanupSession();
+  void InitializeSFTPPool();
+  void CleanupSFTPPool();
+};
+
+} // namespace duckdb

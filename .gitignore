@@ -1,0 +1,38 @@
+# Build directories
+build/
+.devenv/
+.direnv/
+
+# Auto-generated devenv files
+.devenv.flake.nix
+.pre-commit-config.yaml
+
+# Test data
+test_data.csv
+*.ducklake
+*.ducklake.wal
+*.ducklake.files/
+*.sql
+
+# Benchmark results
+benchmark_results.txt
+/tmp/
+
+# Temporary files
+*.log
+*.tmp
+*_output.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Uploaded test files (on remote server)
+test_data_*.csv
