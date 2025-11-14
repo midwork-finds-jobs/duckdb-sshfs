@@ -1,0 +1,78 @@
+services:
+  sshfs:
+    image: atmoz/sftp:latest
+    hostname: duckdb-sshfs-test.local
+    ports:
+      - "2222:22"
+    volumes:
+      - ./test-ssh-key.pub:/home/duckdb_sshfs_user/.ssh/keys/test-key.pub:ro
+    command: duckdb_sshfs_user::1000:1000:upload
+
+  sshfs_setup:
+    image: alpine:latest
+    depends_on:
+      - sshfs
+    links:
+      - sshfs
+    volumes:
+      - ./test-ssh-key:/root/.ssh/test-key:ro
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        apk add --no-cache openssh-client;
+
+        # Wait for SSH server to be ready
+        until (
+          ssh-keyscan -p 22 sshfs 2>/dev/null | grep -q 'ssh-rsa\|ssh-ed25519\|ecdsa-sha2'
+        ) do
+          echo '...waiting for SSH server...' && sleep 1;
+        done;
+
+        echo 'SSH server is ready, creating test data...';
+
+        # Set correct permissions for SSH key
+        chmod 600 /root/.ssh/test-key;
+
+        # Create temporary directory for test files
+        mkdir -p /tmp/sshfs-test;
+
+        # Create test files
+        printf 'Hello from SSHFS' > /tmp/sshfs-test/hello.txt;
+
+        echo 'id,name,value' > /tmp/sshfs-test/test1.csv;
+        echo '1,Alice,100' >> /tmp/sshfs-test/test1.csv;
+        echo '2,Bob,200' >> /tmp/sshfs-test/test1.csv;
+
+        echo 'id,name,value' > /tmp/sshfs-test/test2.csv;
+        echo '3,Charlie,300' >> /tmp/sshfs-test/test2.csv;
+        echo '4,Diana,400' >> /tmp/sshfs-test/test2.csv;
+
+        echo 'id,name,value' > /tmp/sshfs-test/test3.csv;
+        echo '5,Eve,500' >> /tmp/sshfs-test/test3.csv;
+        echo '6,Frank,600' >> /tmp/sshfs-test/test3.csv;
+
+        echo 'id,year,data' > /tmp/sshfs-test/data2023.csv;
+        echo '1,2023,test2023' >> /tmp/sshfs-test/data2023.csv;
+
+        echo 'id,year,data' > /tmp/sshfs-test/data2024.csv;
+        echo '2,2024,test2024.csv' >> /tmp/sshfs-test/data2024.csv;
+
+        # Upload files using SFTP with key authentication
+        # Note: Files must go into upload/ subdirectory due to chroot security requirements
+        echo 'Uploading test files via SFTP...';
+        echo "put /tmp/sshfs-test/hello.txt upload/hello.txt" | sftp -i /root/.ssh/test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null duckdb_sshfs_user@sshfs;
+        echo "mkdir upload/test-dir" | sftp -i /root/.ssh/test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null duckdb_sshfs_user@sshfs;
+        echo "put /tmp/sshfs-test/test1.csv upload/test-dir/test1.csv" | sftp -i /root/.ssh/test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null duckdb_sshfs_user@sshfs;
+        echo "mkdir upload/test-dir/subdir1" | sftp -i /root/.ssh/test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null duckdb_sshfs_user@sshfs;
+        echo "put /tmp/sshfs-test/test2.csv upload/test-dir/subdir1/test2.csv" | sftp -i /root/.ssh/test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null duckdb_sshfs_user@sshfs;
+        echo "mkdir upload/test-dir/subdir2" | sftp -i /root/.ssh/test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null duckdb_sshfs_user@sshfs;
+        echo "put /tmp/sshfs-test/test3.csv upload/test-dir/subdir2/test3.csv" | sftp -i /root/.ssh/test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null duckdb_sshfs_user@sshfs;
+        echo "mkdir upload/glob-test" | sftp -i /root/.ssh/test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null duckdb_sshfs_user@sshfs;
+        echo "mkdir upload/glob-test/year-2023" | sftp -i /root/.ssh/test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null duckdb_sshfs_user@sshfs;
+        echo "put /tmp/sshfs-test/data2023.csv upload/glob-test/year-2023/data.csv" | sftp -i /root/.ssh/test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null duckdb_sshfs_user@sshfs;
+        echo "mkdir upload/glob-test/year-2024" | sftp -i /root/.ssh/test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null duckdb_sshfs_user@sshfs;
+        echo "put /tmp/sshfs-test/data2024.csv upload/glob-test/year-2024/data.csv" | sftp -i /root/.ssh/test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null duckdb_sshfs_user@sshfs;
+
+        echo 'FINISHED SETTING UP SSHFS';
+        exit 0;

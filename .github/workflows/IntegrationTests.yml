@@ -1,0 +1,69 @@
+name: Integration Tests
+on:
+  push:
+  pull_request:
+  repository_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' || github.sha }}
+  cancel-in-progress: true
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  linux-tests-sshfs:
+    name: SSHFS Integration Tests
+    runs-on: ubuntu-latest
+    env:
+      SSHFS_TEST_SERVER_AVAILABLE: 1
+      SSHFS_TEST_USERNAME: duckdb_sshfs_user
+      SSHFS_TEST_PASSWORD: duckdb_sshfs_password
+      SSHFS_TEST_BASE_URL: sshfs://localhost:2222
+      SSHFS_TEST_PORT: 2222
+      CORE_EXTENSIONS: "parquet;json"
+      GEN: ninja
+      VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+      VCPKG_TARGET_TRIPLET: x64-linux
+
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 #v4
+        with:
+          fetch-depth: 0
+          submodules: 'true'
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 #v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Ninja
+        shell: bash
+        run: sudo apt-get update -y -qq && sudo apt-get install -y -qq ninja-build
+
+      - name: Setup Ccache
+        uses: hendrikmuhs/ccache-action@97635eac5f893a37d7025e081038e3629f185c26 #main
+        with:
+          key: ${{ github.job }}
+          save: ${{ github.ref == 'refs/heads/main' || github.repository != 'duckdb/duckdb-sshfs' }}
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@abed23940f9d7bc267b0e1a21ee7b699a3794baa #v11.1
+        with:
+          vcpkgGitCommitId: 5e5d0e1cd7785623065e77eff011afdeec1a3574
+
+      - name: Build extension
+        shell: bash
+        run: make
+
+      - name: Start SSHFS test server
+        shell: bash
+        run: |
+          ./scripts/run_sshfs_test_server.sh
+
+      - name: Run tests
+        shell: bash
+        run: make test
+
+      - name: Stop SSHFS test server
+        if: always()
+        shell: bash
+        run: ./scripts/stop_sshfs_test_server.sh

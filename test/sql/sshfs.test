@@ -1,0 +1,18 @@
+# name: test/sql/sshfs.test
+# description: test sshfs extension loads correctly
+# group: [sql]
+
+# Require statement will ensure this test is run with this extension loaded
+require sshfs
+
+# Test 1: Verify extension is loaded
+query I
+SELECT COUNT(*) FROM duckdb_extensions() WHERE extension_name = 'sshfs' AND loaded = true;
+----
+1
+
+# Test 2: Verify sshfs configuration settings exist
+query I
+SELECT COUNT(*) >= 3 FROM duckdb_settings() WHERE name LIKE 'sshfs_%';
+----
+true

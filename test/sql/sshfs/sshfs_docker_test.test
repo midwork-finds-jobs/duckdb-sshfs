@@ -1,0 +1,54 @@
+# name: test/sql/sshfs/sshfs_docker_test.test
+# description: Test SSHFS filesystem operations with Docker test server
+# group: [sshfs]
+
+require sshfs
+
+require-env SSHFS_TEST_SERVER_AVAILABLE 1
+
+require-env SSHFS_TEST_USERNAME
+
+require-env SSHFS_TEST_BASE_URL
+
+require-env SSHFS_TEST_PORT
+
+# Override default behaviour of skipping errors
+set ignore_error_messages
+
+# Test 1: Create an SSH secret for authentication with key
+statement ok
+CREATE SECRET sshfs_docker_test (
+    TYPE SSH,
+    USERNAME '${SSHFS_TEST_USERNAME}',
+    KEY_PATH 'scripts/test-ssh-key',
+    PORT ${SSHFS_TEST_PORT}
+);
+
+# Verify the secret was created
+query I
+SELECT count(*) FROM duckdb_secrets() WHERE name = 'sshfs_docker_test';
+----
+1
+
+# Test 2: Write a CSV file to SSHFS
+statement ok
+CREATE TABLE test_write AS SELECT 1 as id, 'Alice' as name, 100 as value
+UNION ALL SELECT 2, 'Bob', 200;
+
+statement ok
+COPY test_write TO 'sshfs://${SSHFS_TEST_USERNAME}@localhost:${SSHFS_TEST_PORT}/upload/test_output.csv' (HEADER, DELIMITER ',');
+
+# Test 3: Write to a different file
+statement ok
+COPY test_write TO 'sshfs://${SSHFS_TEST_USERNAME}@localhost:${SSHFS_TEST_PORT}/upload/test_output2.csv' (HEADER, DELIMITER ',');
+
+# Test 4: Test directory creation and file write
+statement ok
+COPY test_write TO 'sshfs://${SSHFS_TEST_USERNAME}@localhost:${SSHFS_TEST_PORT}/upload/newdir/test.csv' (HEADER, DELIMITER ',');
+
+# Cleanup
+statement ok
+DROP TABLE test_write;
+
+statement ok
+DROP SECRET sshfs_docker_test;
