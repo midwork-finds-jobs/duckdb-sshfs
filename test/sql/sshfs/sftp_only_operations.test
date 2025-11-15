@@ -1,0 +1,101 @@
+# name: test/sql/sshfs/sftp_only_operations.test
+# description: Test SFTP-only server operations (no SSH command execution)
+# group: [sshfs]
+
+require sshfs
+
+require-env SSHFS_TEST_SERVER_AVAILABLE 1
+
+require-env SSHFS_TEST_SFTP_PORT
+
+# Override default behaviour of skipping errors
+set ignore_error_messages
+
+# Test: Create an SSH secret for SFTP-only server
+statement ok
+CREATE SECRET sftp_only_test (
+    TYPE SSH,
+    USERNAME 'duckdb_sftp_user',
+    KEY_PATH 'scripts/test-ssh-key',
+    PORT ${SSHFS_TEST_SFTP_PORT}
+);
+
+# Verify the secret was created
+query I
+SELECT count(*) FROM duckdb_secrets() WHERE name = 'sftp_only_test';
+----
+1
+
+# Test: Read existing file from SFTP-only server (uploaded during setup)
+query III
+SELECT * FROM 'sftp://duckdb_sftp_user@localhost:${SSHFS_TEST_SFTP_PORT}/upload/sftp-test-dir/test1.csv' ORDER BY id;
+----
+1	Alice	100
+2	Bob	200
+
+# Test: Read nested file from SFTP-only server
+query III
+SELECT * FROM 'sftp://duckdb_sftp_user@localhost:${SSHFS_TEST_SFTP_PORT}/upload/sftp-test-dir/nested/test2.csv' ORDER BY id;
+----
+3	Charlie	300
+4	Diana	400
+
+# Test: Write new data to SFTP-only server
+statement ok
+CREATE TABLE test_sftp_only AS
+SELECT 1 as id, 'SFTP-Only' as name, 999 as value
+UNION ALL SELECT 2, 'Test', 888;
+
+statement ok
+COPY test_sftp_only TO 'sftp://duckdb_sftp_user@localhost:${SSHFS_TEST_SFTP_PORT}/upload/sftp-write-test.csv' (HEADER, DELIMITER ',');
+
+# Test: Read back the written data
+query III
+SELECT * FROM 'sftp://duckdb_sftp_user@localhost:${SSHFS_TEST_SFTP_PORT}/upload/sftp-write-test.csv' ORDER BY id;
+----
+1	SFTP-Only	999
+2	Test	888
+
+# Test: Create nested directories with SFTP-only operations
+# This tests the CreateDirectorySFTP recursive mkdir implementation
+statement ok
+COPY test_sftp_only TO 'sftp://duckdb_sftp_user@localhost:${SSHFS_TEST_SFTP_PORT}/upload/deep/nested/path/test.csv' (HEADER, DELIMITER ',');
+
+# Verify the file was created in the nested directory
+query I
+SELECT COUNT(*) FROM 'sftp://duckdb_sftp_user@localhost:${SSHFS_TEST_SFTP_PORT}/upload/deep/nested/path/test.csv';
+----
+2
+
+# Test: Multiple writes to verify SFTP session pooling works correctly
+statement ok
+COPY test_sftp_only TO 'sftp://duckdb_sftp_user@localhost:${SSHFS_TEST_SFTP_PORT}/upload/write1.csv' (HEADER, DELIMITER ',');
+
+statement ok
+COPY test_sftp_only TO 'sftp://duckdb_sftp_user@localhost:${SSHFS_TEST_SFTP_PORT}/upload/write2.csv' (HEADER, DELIMITER ',');
+
+statement ok
+COPY test_sftp_only TO 'sftp://duckdb_sftp_user@localhost:${SSHFS_TEST_SFTP_PORT}/upload/write3.csv' (HEADER, DELIMITER ',');
+
+# Verify all files were written correctly
+query I
+SELECT COUNT(*) FROM 'sftp://duckdb_sftp_user@localhost:${SSHFS_TEST_SFTP_PORT}/upload/write1.csv';
+----
+2
+
+query I
+SELECT COUNT(*) FROM 'sftp://duckdb_sftp_user@localhost:${SSHFS_TEST_SFTP_PORT}/upload/write2.csv';
+----
+2
+
+query I
+SELECT COUNT(*) FROM 'sftp://duckdb_sftp_user@localhost:${SSHFS_TEST_SFTP_PORT}/upload/write3.csv';
+----
+2
+
+# Cleanup
+statement ok
+DROP TABLE test_sftp_only;
+
+statement ok
+DROP SECRET sftp_only_test;

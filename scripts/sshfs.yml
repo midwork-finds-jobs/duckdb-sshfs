@@ -1,4 +1,5 @@
 services:
+  # SFTP server (atmoz/sftp is SFTP-only by design)
   sshfs:
     image: atmoz/sftp:latest
     hostname: duckdb-sshfs-test.local
@@ -8,12 +9,25 @@ services:
       - ./test-ssh-key.pub:/home/duckdb_sshfs_user/.ssh/keys/test-key.pub:ro
     command: duckdb_sshfs_user::1000:1000:upload
 
+  # SFTP-only server (no shell access, SFTP protocol only)
+  sshfs_sftp_only:
+    image: atmoz/sftp:latest
+    hostname: duckdb-sshfs-sftp-only.local
+    ports:
+      - "2223:22"
+    volumes:
+      - ./test-ssh-key.pub:/home/duckdb_sftp_user/.ssh/keys/test-key.pub:ro
+    # Force internal-sftp subsystem only (no shell access)
+    command: duckdb_sftp_user::1001:1001:upload
+
   sshfs_setup:
     image: alpine:latest
     depends_on:
       - sshfs
+      - sshfs_sftp_only
     links:
       - sshfs
+      - sshfs_sftp_only
     volumes:
       - ./test-ssh-key:/root/.ssh/test-key:ro
     entrypoint:
@@ -75,4 +89,24 @@ services:
         echo "put /tmp/sshfs-test/data2024.csv upload/glob-test/year-2024/data.csv" | sftp -i /root/.ssh/test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null duckdb_sshfs_user@sshfs;
 
         echo 'FINISHED SETTING UP SSHFS';
+
+        # Wait for SFTP-only server to be ready
+        echo 'Waiting for SFTP-only server...';
+        until (
+          ssh-keyscan -p 22 sshfs_sftp_only 2>/dev/null | grep -q 'ssh-rsa\|ssh-ed25519\|ecdsa-sha2'
+        ) do
+          echo '...waiting for SFTP-only server...' && sleep 1;
+        done;
+
+        echo 'SFTP-only server is ready, uploading test data...';
+
+        # Upload test files to SFTP-only server
+        # This server should NOT support SSH command execution (dd, mkdir -p, etc.)
+        echo "put /tmp/sshfs-test/hello.txt upload/hello_sftp.txt" | sftp -i /root/.ssh/test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null duckdb_sftp_user@sshfs_sftp_only;
+        echo "mkdir upload/sftp-test-dir" | sftp -i /root/.ssh/test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null duckdb_sftp_user@sshfs_sftp_only;
+        echo "put /tmp/sshfs-test/test1.csv upload/sftp-test-dir/test1.csv" | sftp -i /root/.ssh/test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null duckdb_sftp_user@sshfs_sftp_only;
+        echo "mkdir upload/sftp-test-dir/nested" | sftp -i /root/.ssh/test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null duckdb_sftp_user@sshfs_sftp_only;
+        echo "put /tmp/sshfs-test/test2.csv upload/sftp-test-dir/nested/test2.csv" | sftp -i /root/.ssh/test-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null duckdb_sftp_user@sshfs_sftp_only;
+
+        echo 'FINISHED SETTING UP SFTP-ONLY SERVER';
         exit 0;

@@ -1,0 +1,75 @@
+# name: test/sql/sshfs/sftp_prefix.test
+# description: Test sftp:// prefix support (in addition to ssh:// and sshfs://)
+# group: [sshfs]
+
+require sshfs
+
+require-env SSHFS_TEST_SERVER_AVAILABLE 1
+
+require-env SSHFS_TEST_USERNAME
+
+require-env SSHFS_TEST_PORT
+
+# Override default behaviour of skipping errors
+set ignore_error_messages
+
+# Test: Create an SSH secret for authentication
+statement ok
+CREATE SECRET sftp_prefix_test (
+    TYPE SSH,
+    USERNAME '${SSHFS_TEST_USERNAME}',
+    KEY_PATH 'scripts/test-ssh-key',
+    PORT ${SSHFS_TEST_PORT}
+);
+
+# Verify the secret was created
+query I
+SELECT count(*) FROM duckdb_secrets() WHERE name = 'sftp_prefix_test';
+----
+1
+
+# Test: Create test data
+statement ok
+CREATE TABLE test_sftp_prefix AS SELECT 1 as id, 'SFTPPrefix' as name, 400 as value
+UNION ALL SELECT 2, 'Test', 500;
+
+# Test: Use sftp:// prefix to write data
+statement ok
+COPY test_sftp_prefix TO 'sftp://${SSHFS_TEST_USERNAME}@localhost:${SSHFS_TEST_PORT}/upload/test_sftp_prefix.csv' (HEADER, DELIMITER ',');
+
+# Test: Read back the data using sftp:// prefix
+query III
+SELECT * FROM 'sftp://${SSHFS_TEST_USERNAME}@localhost:${SSHFS_TEST_PORT}/upload/test_sftp_prefix.csv' ORDER BY id;
+----
+1	SFTPPrefix	400
+2	Test	500
+
+# Test: Verify all three prefixes work identically
+statement ok
+COPY test_sftp_prefix TO 'ssh://${SSHFS_TEST_USERNAME}@localhost:${SSHFS_TEST_PORT}/upload/test_ssh_prefix2.csv' (HEADER, DELIMITER ',');
+
+statement ok
+COPY test_sftp_prefix TO 'sshfs://${SSHFS_TEST_USERNAME}@localhost:${SSHFS_TEST_PORT}/upload/test_sshfs_prefix2.csv' (HEADER, DELIMITER ',');
+
+# Verify all three can be read
+query I
+SELECT COUNT(*) FROM 'ssh://${SSHFS_TEST_USERNAME}@localhost:${SSHFS_TEST_PORT}/upload/test_ssh_prefix2.csv';
+----
+2
+
+query I
+SELECT COUNT(*) FROM 'sshfs://${SSHFS_TEST_USERNAME}@localhost:${SSHFS_TEST_PORT}/upload/test_sshfs_prefix2.csv';
+----
+2
+
+query I
+SELECT COUNT(*) FROM 'sftp://${SSHFS_TEST_USERNAME}@localhost:${SSHFS_TEST_PORT}/upload/test_sftp_prefix.csv';
+----
+2
+
+# Cleanup
+statement ok
+DROP TABLE test_sftp_prefix;
+
+statement ok
+DROP SECRET sftp_prefix_test;
