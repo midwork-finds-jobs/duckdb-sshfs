@@ -794,7 +794,19 @@ void SSHClient::DetectCapabilities() {
     libssh2_channel_send_eof(channel);
     libssh2_channel_wait_eof(channel);
     libssh2_channel_wait_closed(channel);
+
+    // Check exit status - SFTP-only servers may accept the exec but return
+    // non-zero exit status
+    int exit_status = libssh2_channel_get_exit_status(channel);
     libssh2_channel_free(channel);
+
+    if (exit_status != 0) {
+      // Command failed - likely SFTP-only server
+      SSHFS_LOG("  [DETECT] Command execution returned non-zero exit status ("
+                << exit_status << "), assuming SFTP-only mode");
+      supports_commands = false;
+      return;
+    }
 
     // Success - server supports command execution
     SSHFS_LOG("  [DETECT] Server supports SSH command execution");
