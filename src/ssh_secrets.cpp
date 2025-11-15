@@ -43,6 +43,15 @@ void CreateSSHSecretFunctions::Register(ExtensionLoader &loader) {
   ssh_config_fun.named_parameters["host"] = LogicalType::VARCHAR;
   ssh_config_fun.named_parameters["hostname"] = LogicalType::VARCHAR;
 
+  // Performance tuning parameters
+  ssh_config_fun.named_parameters["timeout_seconds"] = LogicalType::INTEGER;
+  ssh_config_fun.named_parameters["max_retries"] = LogicalType::INTEGER;
+  ssh_config_fun.named_parameters["initial_retry_delay_ms"] =
+      LogicalType::INTEGER;
+  ssh_config_fun.named_parameters["chunk_size"] = LogicalType::UBIGINT;
+  ssh_config_fun.named_parameters["max_concurrent_uploads"] =
+      LogicalType::UBIGINT;
+
   // Register the function with the secret manager
   auto &db = loader.GetDatabaseInstance();
   auto &secret_manager = db.GetSecretManager();

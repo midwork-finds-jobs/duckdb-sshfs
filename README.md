@@ -64,9 +64,10 @@ SELECT * FROM 'ssh://storagebox:~/data.csv';
 ```text
 ssh://[username@]hostname[:port]/path/to/file
 sshfs://[username@]hostname[:port]/path/to/file
+sftp://[username@]hostname[:port]/path/to/file
 ```
 
-Both `ssh://` and `sshfs://` prefixes are supported. Username is optional in the URL - it can be provided via a secret instead:
+All three prefixes (`ssh://`, `sshfs://`, `sftp://`) are supported and behave identically. Username is optional in the URL - it can be provided via a secret instead:
 
 ```sql
 -- With username in URL
@@ -75,6 +76,138 @@ COPY data TO 'ssh://user@host/path/file.csv';
 -- Without username in URL (provided via secret)
 CREATE SECRET ssh_creds (TYPE SSH, USERNAME 'user', KEY_PATH '~/.ssh/id_rsa');
 COPY data TO 'ssh://host/path/file.csv';
+```
+
+### SSH Config Support
+
+The extension automatically reads SSH config files (`~/.ssh/config` and `/etc/ssh/ssh_config`) to resolve host aliases and default connection parameters. This allows you to use familiar SSH aliases without creating DuckDB secrets.
+
+#### Example SSH Config
+
+Add to `~/.ssh/config`:
+
+```text
+Host storagebox
+    HostName u123456.your-storagebox.de
+    User u123456
+    Port 23
+    IdentityFile ~/.ssh/storagebox_key
+```
+
+#### Usage with SSH Config
+
+```sql
+LOAD sshfs;
+
+-- Option 1: Use SSH config for everything (key-based auth)
+-- No secret needed if SSH key is configured
+SELECT * FROM 'sftp://storagebox/data.parquet';
+
+-- Option 2: Use SSH config + secret for password auth
+CREATE SECRET storagebox_pwd (
+    TYPE SSH,
+    PASSWORD 'your-password',
+    SCOPE 'sftp://storagebox'
+);
+
+SELECT * FROM 'sftp://storagebox/data.parquet';
+
+-- Option 3: Override SSH config settings with secret
+CREATE SECRET storagebox_custom (
+    TYPE SSH,
+    PASSWORD 'your-password',
+    PORT 22,  -- Override port from SSH config
+    SCOPE 'sftp://storagebox'
+);
+
+SELECT * FROM 'sftp://storagebox/data.parquet';
+```
+
+#### Configuration Precedence
+
+When resolving connection parameters, the extension follows this precedence (highest to lowest):
+
+1. **URL parameters**: `sftp://user@host:2222/path`
+2. **DuckDB secret**: `CREATE SECRET ... (USERNAME 'user', PORT 2222)`
+3. **SSH config**: `~/.ssh/config` settings for the host alias
+4. **Defaults**: Standard SSH defaults (port 22, etc.)
+
+This means you can:
+
+- Define common settings in SSH config
+- Override specific values in secrets when needed
+- Use URL parameters for one-off connections
+
+#### Supported SSH Config Keywords
+
+- `Host`: Alias pattern (supports wildcards like `*.example.com`)
+- `HostName`: Actual hostname to connect to
+- `User`: Username for authentication
+- `Port`: SSH port number
+- `IdentityFile`: Path to private key file
+- `Include`: Include other SSH config files
+
+### SSH Agent Support
+
+The extension automatically uses SSH agent for authentication if the `SSH_AUTH_SOCK` environment variable is set. This allows you to use keys loaded in your SSH agent without specifying them in secrets or config files.
+
+#### Authentication Priority
+
+The extension tries authentication methods in this order:
+
+1. **SSH Agent**: If `SSH_AUTH_SOCK` is set, tries all identities from the agent
+2. **Key File**: If `KEY_PATH` is specified in secret or SSH config
+3. **Password**: If `PASSWORD` is specified in secret
+
+#### Example: SSH Agent Authentication
+
+```bash
+# Add your key to SSH agent
+ssh-add ~/.ssh/storagebox_key
+
+# Verify key is loaded
+ssh-add -l
+```
+
+```sql
+LOAD sshfs;
+
+-- Option 1: SSH agent only (no secret needed if username in SSH config)
+SELECT * FROM 'sftp://storagebox/data.parquet';
+
+-- Option 2: SSH agent with username in secret
+CREATE SECRET storagebox_agent (
+    TYPE SSH,
+    USERNAME 'u123456',
+    SCOPE 'sftp://u123456.your-storagebox.de'
+);
+
+SELECT * FROM 'sftp://u123456.your-storagebox.de/data.parquet';
+```
+
+#### Benefits of SSH Agent
+
+- **Security**: Keys remain in the agent; not exposed to applications
+- **Convenience**: No need to specify key paths in every secret
+- **Multiple identities**: Agent automatically tries all loaded keys
+- **Centralized management**: Use `ssh-add` to manage keys for all applications
+
+#### Troubleshooting
+
+If SSH agent authentication isn't working:
+
+```bash
+# Check if SSH agent is running
+echo $SSH_AUTH_SOCK
+
+# List loaded identities
+ssh-add -l
+
+# Start SSH agent if needed (bash/zsh)
+eval $(ssh-agent)
+
+# Add your key
+ssh-add ~/.ssh/your_key
 ```
 
 ### Configuration Options

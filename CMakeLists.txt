@@ -26,6 +26,7 @@ set(EXTENSION_SOURCES
     src/sshfs_file_handle.cpp
     src/ssh_client.cpp
     src/ssh_secrets.cpp
+    src/ssh_config.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})

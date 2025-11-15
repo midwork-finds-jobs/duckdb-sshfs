@@ -203,7 +203,38 @@ void SSHClient::Authenticate() {
   int rc = -1;
   std::string auth_details;
 
-  // Try public key authentication first if key path is provided
+  // Try SSH agent authentication first if SSH_AUTH_SOCK is set
+  const char *ssh_auth_sock = getenv("SSH_AUTH_SOCK");
+  if (ssh_auth_sock && strlen(ssh_auth_sock) > 0) {
+    LIBSSH2_AGENT *agent = libssh2_agent_init(session);
+    if (agent) {
+      if (libssh2_agent_connect(agent) == 0) {
+        if (libssh2_agent_list_identities(agent) == 0) {
+          struct libssh2_agent_publickey *identity = nullptr;
+          struct libssh2_agent_publickey *prev = nullptr;
+
+          // Try each identity from the agent
+          while (libssh2_agent_get_identity(agent, &identity, prev) == 0) {
+            if (libssh2_agent_userauth(agent, params.username.c_str(),
+                                       identity) == 0) {
+              // Success! Clean up agent and return
+              libssh2_agent_disconnect(agent);
+              libssh2_agent_free(agent);
+              SSHFS_LOG("  [AUTH] SSH agent authentication succeeded");
+              return;
+            }
+            prev = identity;
+          }
+        }
+        libssh2_agent_disconnect(agent);
+      }
+      libssh2_agent_free(agent);
+      auth_details =
+          "  → SSH agent authentication failed (tried all identities)\n";
+    }
+  }
+
+  // Try public key authentication if key path is provided
   if (!params.key_path.empty()) {
     std::string public_key = params.key_path + ".pub";
     rc = libssh2_userauth_publickey_fromfile(session, params.username.c_str(),
@@ -247,12 +278,15 @@ void SSHClient::Authenticate() {
   }
 
   // No auth methods available
-  if (params.key_path.empty() && params.password.empty()) {
+  if (params.key_path.empty() && params.password.empty() &&
+      (!ssh_auth_sock || strlen(ssh_auth_sock) == 0)) {
     CleanupSession();
     throw IOException(
         "SSH authentication failed for %s@%s:%d\n"
-        "  No authentication method provided\n"
-        "  → Specify either 'password' or 'key_path' in connection parameters",
+        "  No authentication method available\n"
+        "  → Specify either 'password' or 'key_path' in connection parameters\n"
+        "  → Or ensure SSH agent is running (SSH_AUTH_SOCK environment "
+        "variable)",
         params.username.c_str(), params.hostname.c_str(), params.port);
   }
 

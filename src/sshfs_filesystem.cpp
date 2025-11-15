@@ -3,6 +3,7 @@
 #include "duckdb/common/file_opener.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
+#include "ssh_config.hpp"
 #include "sshfs_file_handle.hpp"
 #include <ctime>
 #include <regex>
@@ -305,10 +306,42 @@ SSHConnectionParams SSHFSFileSystem::ParseURL(const string &path,
     }
   }
 
-  // Resolve host alias to actual hostname (like ~/.ssh/config)
-  // Check if the hostname from URL matches a "host" in any secret
+  // Look up SSH config (~/.ssh/config) to get default connection parameters
+  // This allows using SSH config host aliases without creating secrets
   std::string original_host_alias = params.hostname;
+  SSHHostConfig ssh_config = SSHConfigParser::LookupHost(original_host_alias);
+
+  // Track if hostname was resolved (so secret lookups use the original alias)
   bool host_alias_resolved = false;
+
+  // Apply SSH config defaults (URL parameters and secrets will override)
+  if (ssh_config.found) {
+    // HostName from SSH config
+    if (!ssh_config.hostname.empty()) {
+      params.hostname = ssh_config.hostname;
+      // Mark that we resolved the hostname from an alias
+      host_alias_resolved = true;
+    }
+
+    // User from SSH config (if not provided in URL)
+    if (params.username.empty() && !ssh_config.user.empty()) {
+      params.username = ssh_config.user;
+    }
+
+    // Port from SSH config (if not provided in URL)
+    if (params.port == 22 && ssh_config.port != 22) {
+      params.port = ssh_config.port;
+    }
+
+    // IdentityFile from SSH config (will be used later if no password in
+    // secret)
+    if (!ssh_config.identity_file.empty()) {
+      params.key_path = ssh_config.identity_file;
+    }
+  }
+
+  // Resolve host alias to actual hostname (from DuckDB secrets)
+  // Check if the hostname from URL matches a "host" in any secret
 
   if (opener) {
     try {
