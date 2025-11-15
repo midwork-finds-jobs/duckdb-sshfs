@@ -581,6 +581,11 @@ size_t SSHClient::ReadBytes(const std::string &remote_path, char *buffer,
     throw IOException("Not connected to SSH server");
   }
 
+  // Fall back to SFTP reads for SFTP-only servers
+  if (!supports_commands) {
+    return ReadBytesSFTP(remote_path, buffer, offset, length);
+  }
+
   auto read_start = std::chrono::steady_clock::now();
 
   // Use SSH dd command for reads - faster than SFTP (no session overhead)
@@ -918,6 +923,93 @@ void SSHClient::TruncateFileSFTP(const std::string &remote_path,
       throw IOException("Failed to truncate file: %s to size %lld", remote_path,
                         new_size);
     }
+  } catch (...) {
+    ReturnSFTPSession(sftp);
+    throw;
+  }
+}
+
+size_t SSHClient::ReadBytesSFTP(const std::string &remote_path, char *buffer,
+                                size_t offset, size_t length) {
+  auto read_start = std::chrono::steady_clock::now();
+
+  LIBSSH2_SFTP *sftp = BorrowSFTPSession();
+
+  try {
+    // Open file for reading
+    auto open_start = std::chrono::steady_clock::now();
+    LIBSSH2_SFTP_HANDLE *handle =
+        libssh2_sftp_open(sftp, remote_path.c_str(), LIBSSH2_FXF_READ, 0);
+
+    if (!handle) {
+      ReturnSFTPSession(sftp);
+      int sftp_error = libssh2_sftp_last_error(sftp);
+      throw IOException("Failed to open file for read: %s (SFTP error: %d)",
+                        remote_path, sftp_error);
+    }
+    auto open_end = std::chrono::steady_clock::now();
+    auto open_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       open_end - open_start)
+                       .count();
+
+    // Seek to the offset
+    auto seek_start = std::chrono::steady_clock::now();
+    libssh2_sftp_seek64(handle, offset);
+    auto seek_end = std::chrono::steady_clock::now();
+    auto seek_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       seek_end - seek_start)
+                       .count();
+
+    // Read data
+    auto actual_read_start = std::chrono::steady_clock::now();
+    size_t total_read = 0;
+    while (total_read < length) {
+      ssize_t nread =
+          libssh2_sftp_read(handle, buffer + total_read, length - total_read);
+
+      if (nread == LIBSSH2_ERROR_EAGAIN) {
+        continue; // Retry
+      } else if (nread < 0) {
+        libssh2_sftp_close(handle);
+        ReturnSFTPSession(sftp);
+        throw IOException("Failed to read from SFTP file: %s (error: %zd)",
+                          remote_path, nread);
+      } else if (nread == 0) {
+        // End of file
+        break;
+      }
+
+      total_read += nread;
+    }
+    auto actual_read_end = std::chrono::steady_clock::now();
+    auto actual_read_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              actual_read_end - actual_read_start)
+                              .count();
+
+    // Close handle
+    auto close_start = std::chrono::steady_clock::now();
+    libssh2_sftp_close(handle);
+    ReturnSFTPSession(sftp);
+    auto close_end = std::chrono::steady_clock::now();
+    auto close_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        close_end - close_start)
+                        .count();
+
+    auto read_end = std::chrono::steady_clock::now();
+    auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        read_end - read_start)
+                        .count();
+
+    SSHFS_LOG("  [READ-SFTP] offset="
+              << offset << " length=" << length << " read=" << total_read
+              << " bytes in " << total_ms << "ms ("
+              << (total_read / 1024.0 / 1024.0) / (total_ms / 1000.0)
+              << " MB/s)");
+    SSHFS_LOG("    [BREAKDOWN] open=" << open_ms << "ms, seek=" << seek_ms
+                                      << "ms, actual_read=" << actual_read_ms
+                                      << "ms, close=" << close_ms << "ms");
+
+    return total_read;
   } catch (...) {
     ReturnSFTPSession(sftp);
     throw;

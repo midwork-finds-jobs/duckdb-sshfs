@@ -74,6 +74,8 @@ public:
   void CreateDirectorySFTP(const std::string &remote_path);
   void RemoveDirectorySFTP(const std::string &remote_path);
   void TruncateFileSFTP(const std::string &remote_path, int64_t new_size);
+  size_t ReadBytesSFTP(const std::string &remote_path, char *buffer,
+                       size_t offset, size_t length);
 
 private:
   SSHConnectionParams params;
