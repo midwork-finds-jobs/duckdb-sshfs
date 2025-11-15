@@ -213,7 +213,8 @@ vector<OpenFileInfo> SSHFSFileSystem::Glob(const string &path,
 
 bool SSHFSFileSystem::CanHandleFile(const string &fpath) {
   return StringUtil::StartsWith(fpath, "sshfs://") ||
-         StringUtil::StartsWith(fpath, "ssh://");
+         StringUtil::StartsWith(fpath, "ssh://") ||
+         StringUtil::StartsWith(fpath, "sftp://");
 }
 
 timestamp_t SSHFSFileSystem::GetLastModifiedTime(FileHandle &handle) {
@@ -258,24 +259,26 @@ SSHConnectionParams SSHFSFileSystem::ParseURL(const string &path,
                                               FileOpener *opener) {
   SSHConnectionParams params;
 
-  // Parse ssh://[username@]hostname[:port]/path/to/file or sshfs://...
-  // Support both ssh:// and sshfs:// prefixes
-  // Username is optional - can be provided via secret
-  // Support both URL-style (/path) and SCP-style (:path) separators
+  // Parse ssh://[username@]hostname[:port]/path/to/file or sshfs://... or
+  // sftp://... Support ssh://, sshfs://, and sftp:// prefixes Username is
+  // optional - can be provided via secret Support both URL-style (/path) and
+  // SCP-style (:path) separators
   std::regex url_regex(
-      R"((?:ssh|sshfs)://(?:([^@]+)@)?([^:/]+)(?::(\d+))?([:/].*))");
+      R"((?:ssh|sshfs|sftp)://(?:([^@]+)@)?([^:/]+)(?::(\d+))?([:/].*))");
   std::smatch matches;
 
   if (!std::regex_match(path, matches, url_regex)) {
-    throw IOException("Invalid SSH/SSHFS URL format: %s. Expected: "
+    throw IOException("Invalid SSH/SSHFS/SFTP URL format: %s. Expected: "
                       "ssh://[username@]hostname[:port]/path or "
                       "ssh://[username@]hostname:path (SCP-style)",
                       path);
   }
 
-  // Extract the URL prefix (ssh:// or sshfs://) for secret lookups
-  std::string url_prefix =
-      StringUtil::StartsWith(path, "ssh://") ? "ssh://" : "sshfs://";
+  // Extract the URL prefix (ssh://, sshfs://, or sftp://) for secret lookups
+  std::string url_prefix = StringUtil::StartsWith(path, "ssh://") ? "ssh://"
+                           : StringUtil::StartsWith(path, "sshfs://")
+                               ? "sshfs://"
+                               : "sftp://";
 
   // Username is optional in URL - can be provided via secret
   if (matches[1].matched) {
