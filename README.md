@@ -38,17 +38,20 @@ make
 -- Load the extension
 LOAD 'sshfs';
 
--- Create a secret for authentication
+-- Create a secret for authentication with host alias and scope
 CREATE SECRET ssh_storage (
     TYPE SSH,
     USERNAME 'u123456',
     KEY_PATH '/Users/' || getenv('USER') || '/.ssh/storagebox_key',
-    PORT 23
+    PORT 23,
+    HOST 'storagebox',
+    HOSTNAME 'u123456.your-storagebox.de',
+    SCOPE 'ssh://storagebox'
 );
 
--- Write data to remote server
+-- Write data to remote server using the host alias
 COPY (SELECT * FROM large_table)
-TO 'sshfs://u123456.your-storagebox.de/data.csv';
+TO 'ssh://storagebox/data.csv';
 ```
 
 ### URL Format
