@@ -36,13 +36,15 @@ make
 
 ```sql
 -- Load the extension
-LOAD 'sshfs';
+INSTALL sshfs FROM community;
+LOAD sshfs;
 
 -- Create a secret for authentication with host alias and scope
 CREATE SECRET ssh_storage (
     TYPE SSH,
     USERNAME 'u123456',
     KEY_PATH '/Users/' || getenv('USER') || '/.ssh/storagebox_key',
+    -- Or use: PASSWORD 'password'
     PORT 23,
     HOST 'storagebox',
     HOSTNAME 'u123456.your-storagebox.de',
@@ -51,7 +53,10 @@ CREATE SECRET ssh_storage (
 
 -- Write data to remote server using the host alias
 COPY (SELECT * FROM large_table)
-TO 'ssh://storagebox/data.csv';
+TO 'ssh://storagebox:~/data.csv';
+
+-- Read data from remote server
+SELECT * FROM 'ssh://storagebox:~/data.csv';
 ```
 
 ### URL Format

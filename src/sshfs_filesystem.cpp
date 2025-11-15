@@ -244,14 +244,15 @@ SSHConnectionParams SSHFSFileSystem::ParseURL(const string &path,
   // Parse ssh://[username@]hostname[:port]/path/to/file or sshfs://...
   // Support both ssh:// and sshfs:// prefixes
   // Username is optional - can be provided via secret
+  // Support both URL-style (/path) and SCP-style (:path) separators
   std::regex url_regex(
-      R"((?:ssh|sshfs)://(?:([^@]+)@)?([^:/]+)(?::(\d+))?(/.*))");
+      R"((?:ssh|sshfs)://(?:([^@]+)@)?([^:/]+)(?::(\d+))?([:/].*))");
   std::smatch matches;
 
   if (!std::regex_match(path, matches, url_regex)) {
     throw IOException("Invalid SSH/SSHFS URL format: %s. Expected: "
                       "ssh://[username@]hostname[:port]/path or "
-                      "sshfs://[username@]hostname[:port]/path",
+                      "ssh://[username@]hostname:path (SCP-style)",
                       path);
   }
 
@@ -269,12 +270,18 @@ SSHConnectionParams SSHFSFileSystem::ParseURL(const string &path,
   } else {
     params.port = 22; // Default SFTP port
   }
-  // Extract the remote path (match[4] is the /path/to/file part)
+  // Extract the remote path (match[4] is the /path/to/file or :path part)
   if (matches[4].matched) {
     params.remote_path = matches[4].str();
-    // Remove leading slash for SFTP (relative to home directory)
-    if (!params.remote_path.empty() && params.remote_path[0] == '/') {
-      params.remote_path = params.remote_path.substr(1);
+    // Handle both URL-style (/path) and SCP-style (:path)
+    if (!params.remote_path.empty()) {
+      if (params.remote_path[0] == '/') {
+        // URL-style: remove leading slash (relative to home directory)
+        params.remote_path = params.remote_path.substr(1);
+      } else if (params.remote_path[0] == ':') {
+        // SCP-style: remove leading colon, path is as-is (can be ~ or absolute)
+        params.remote_path = params.remote_path.substr(1);
+      }
     }
   }
 
@@ -326,8 +333,13 @@ SSHConnectionParams SSHFSFileSystem::ParseURL(const string &path,
         auto transaction = FileOpener::TryGetCatalogTransaction(opener);
         if (transaction) {
           // Look up secret using the same prefix as the URL for SCOPE matching
-          auto secret_match = secret_manager->LookupSecret(
-              *transaction, url_prefix + params.hostname, "ssh");
+          // Use the original host alias (not resolved hostname) so SCOPE
+          // matches
+          std::string lookup_key = host_alias_resolved
+                                       ? url_prefix + original_host_alias
+                                       : url_prefix + params.hostname;
+          auto secret_match =
+              secret_manager->LookupSecret(*transaction, lookup_key, "ssh");
 
           if (secret_match.HasMatch()) {
             auto &base_secret = secret_match.GetSecret();
