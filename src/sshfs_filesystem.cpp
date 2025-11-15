@@ -81,10 +81,15 @@ void SSHFSFileSystem::Truncate(FileHandle &handle, int64_t new_size) {
   // Flush any pending writes before truncating
   sshfs_handle.Flush();
 
-  // Use truncate command via SSH
-  std::string command =
-      "truncate -s " + std::to_string(new_size) + " " + remote_path;
-  client->ExecuteCommand(command);
+  if (!client->SupportsCommands()) {
+    // Use SFTP-only truncate
+    client->TruncateFileSFTP(remote_path, new_size);
+  } else {
+    // Use SSH command for faster execution
+    std::string command =
+        "truncate -s " + std::to_string(new_size) + " " + remote_path;
+    client->ExecuteCommand(command);
+  }
 }
 
 void SSHFSFileSystem::FileSync(FileHandle &handle) {
@@ -147,8 +152,14 @@ void SSHFSFileSystem::CreateDirectory(const string &directory,
     client->Connect();
   }
 
-  std::string command = "mkdir -p " + params.remote_path;
-  client->ExecuteCommand(command);
+  if (!client->SupportsCommands()) {
+    // Use SFTP-only recursive directory creation
+    client->CreateDirectorySFTP(params.remote_path);
+  } else {
+    // Use SSH command for faster execution
+    std::string command = "mkdir -p " + params.remote_path;
+    client->ExecuteCommand(command);
+  }
 }
 
 bool SSHFSFileSystem::DirectoryExists(const string &directory,
@@ -180,8 +191,14 @@ void SSHFSFileSystem::RemoveDirectory(const string &directory,
     client->Connect();
   }
 
-  std::string command = "rmdir " + params.remote_path;
-  client->ExecuteCommand(command);
+  if (!client->SupportsCommands()) {
+    // Use SFTP-only directory removal
+    client->RemoveDirectorySFTP(params.remote_path);
+  } else {
+    // Use SSH command
+    std::string command = "rmdir " + params.remote_path;
+    client->ExecuteCommand(command);
+  }
 }
 
 vector<OpenFileInfo> SSHFSFileSystem::Glob(const string &path,

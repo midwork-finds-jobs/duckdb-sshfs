@@ -45,6 +45,10 @@ public:
   bool ValidateConnection();
   LIBSSH2_SESSION *GetSession() const { return session; }
 
+  // Capability detection
+  bool SupportsCommands() const { return supports_commands; }
+  void DetectCapabilities();
+
   // Command execution
   std::string ExecuteCommand(const std::string &command);
 
@@ -66,12 +70,18 @@ public:
   LIBSSH2_SFTP *BorrowSFTPSession();
   void ReturnSFTPSession(LIBSSH2_SFTP *sftp);
 
+  // SFTP-only operations (no SSH command execution)
+  void CreateDirectorySFTP(const std::string &remote_path);
+  void RemoveDirectorySFTP(const std::string &remote_path);
+  void TruncateFileSFTP(const std::string &remote_path, int64_t new_size);
+
 private:
   SSHConnectionParams params;
   int sock = -1;
   LIBSSH2_SESSION *session = nullptr;
   bool connected = false;
-  std::mutex upload_mutex; // Protect concurrent SFTP operations
+  bool supports_commands = false; // Auto-detected: can execute SSH commands
+  std::mutex upload_mutex;        // Protect concurrent SFTP operations
 
   // SFTP session pool
   std::queue<LIBSSH2_SFTP *> sftp_pool;

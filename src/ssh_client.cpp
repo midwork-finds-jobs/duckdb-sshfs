@@ -111,6 +111,9 @@ void SSHClient::Connect() {
       InitializeSession();
       Authenticate();
 
+      // Detect server capabilities (command execution support)
+      DetectCapabilities();
+
       connected = true;
       if (attempt > 0) {
         SSHFS_LOG("  [RETRY] Connection successful on attempt " << attempt + 1);
@@ -742,6 +745,183 @@ void SSHClient::ReturnSFTPSession(LIBSSH2_SFTP *sftp) {
   std::lock_guard<std::mutex> lock(pool_mutex);
   sftp_pool.push(sftp);
   pool_cv.notify_one();
+}
+
+// Capability detection
+
+void SSHClient::DetectCapabilities() {
+  // Test if we can execute SSH commands (channel exec)
+  // Some SFTP-only servers don't support command execution
+
+  try {
+    // Try to execute a simple command that should work on any Unix system
+    LIBSSH2_CHANNEL *channel;
+    while ((channel = libssh2_channel_open_session(session)) == nullptr &&
+           libssh2_session_last_error(session, nullptr, nullptr, 0) ==
+               LIBSSH2_ERROR_EAGAIN) {
+      // Wait for non-blocking mode
+    }
+
+    if (!channel) {
+      // Can't open channel = SFTP-only server
+      SSHFS_LOG("  [DETECT] Server does not support SSH command execution "
+                "(SFTP-only mode)");
+      supports_commands = false;
+      return;
+    }
+
+    // Try to execute a simple test command
+    int rc = libssh2_channel_exec(channel, ":"); // ':' is a no-op command in sh
+    if (rc != 0) {
+      libssh2_channel_free(channel);
+      SSHFS_LOG("  [DETECT] Server does not support command execution "
+                "(SFTP-only mode)");
+      supports_commands = false;
+      return;
+    }
+
+    // Read and discard any output
+    char buffer[256];
+    while (libssh2_channel_read(channel, buffer, sizeof(buffer)) > 0) {
+      // Drain output
+    }
+
+    libssh2_channel_send_eof(channel);
+    libssh2_channel_wait_eof(channel);
+    libssh2_channel_wait_closed(channel);
+    libssh2_channel_free(channel);
+
+    // Success - server supports command execution
+    SSHFS_LOG("  [DETECT] Server supports SSH command execution");
+    supports_commands = true;
+
+  } catch (...) {
+    // If anything goes wrong, assume SFTP-only
+    SSHFS_LOG("  [DETECT] Error testing commands, assuming SFTP-only mode");
+    supports_commands = false;
+  }
+}
+
+// SFTP-only operations (no SSH command execution)
+
+void SSHClient::CreateDirectorySFTP(const std::string &remote_path) {
+  // Recursively create directories using SFTP mkdir
+  // Split path by '/' and create each directory level
+
+  LIBSSH2_SFTP *sftp = BorrowSFTPSession();
+
+  try {
+    std::string path;
+    size_t pos = 0;
+    size_t start = 0;
+
+    // Skip leading slash if present
+    if (!remote_path.empty() && remote_path[0] == '/') {
+      start = 1;
+      path = "/";
+    }
+
+    while (true) {
+      pos = remote_path.find('/', start);
+      std::string component;
+
+      if (pos == std::string::npos) {
+        // Last component
+        component = remote_path.substr(start);
+      } else {
+        component = remote_path.substr(start, pos - start);
+      }
+
+      if (!component.empty()) {
+        path += component;
+
+        // Try to create directory (ignore if it already exists)
+        int rc = libssh2_sftp_mkdir(
+            sftp, path.c_str(),
+            LIBSSH2_SFTP_S_IRWXU | LIBSSH2_SFTP_S_IRGRP | LIBSSH2_SFTP_S_IXGRP |
+                LIBSSH2_SFTP_S_IROTH | LIBSSH2_SFTP_S_IXOTH);
+
+        if (rc != 0) {
+          unsigned long err_code = libssh2_sftp_last_error(sftp);
+          // Ignore "file exists" errors
+          if (err_code != LIBSSH2_FX_FILE_ALREADY_EXISTS) {
+            ReturnSFTPSession(sftp);
+            throw IOException(
+                "Failed to create directory: %s (SFTP error: %lu)", path,
+                err_code);
+          }
+        }
+
+        if (pos == std::string::npos) {
+          break;
+        }
+
+        path += "/";
+      }
+
+      start = pos + 1;
+      if (start >= remote_path.length()) {
+        break;
+      }
+    }
+
+    ReturnSFTPSession(sftp);
+  } catch (...) {
+    ReturnSFTPSession(sftp);
+    throw;
+  }
+}
+
+void SSHClient::RemoveDirectorySFTP(const std::string &remote_path) {
+  LIBSSH2_SFTP *sftp = BorrowSFTPSession();
+
+  try {
+    int rc = libssh2_sftp_rmdir(sftp, remote_path.c_str());
+    ReturnSFTPSession(sftp);
+
+    if (rc != 0) {
+      unsigned long err_code = libssh2_sftp_last_error(sftp);
+      throw IOException("Failed to remove directory: %s (SFTP error: %lu)",
+                        remote_path, err_code);
+    }
+  } catch (...) {
+    ReturnSFTPSession(sftp);
+    throw;
+  }
+}
+
+void SSHClient::TruncateFileSFTP(const std::string &remote_path,
+                                 int64_t new_size) {
+  LIBSSH2_SFTP *sftp = BorrowSFTPSession();
+
+  try {
+    // Open file for writing
+    LIBSSH2_SFTP_HANDLE *handle =
+        libssh2_sftp_open(sftp, remote_path.c_str(), LIBSSH2_FXF_WRITE, 0);
+
+    if (!handle) {
+      ReturnSFTPSession(sftp);
+      throw IOException("Failed to open file for truncate: %s", remote_path);
+    }
+
+    // Set file size using fsetstat
+    LIBSSH2_SFTP_ATTRIBUTES attrs;
+    memset(&attrs, 0, sizeof(attrs));
+    attrs.filesize = new_size;
+    attrs.flags = LIBSSH2_SFTP_ATTR_SIZE;
+
+    int rc = libssh2_sftp_fsetstat(handle, &attrs);
+    libssh2_sftp_close(handle);
+    ReturnSFTPSession(sftp);
+
+    if (rc != 0) {
+      throw IOException("Failed to truncate file: %s to size %lld", remote_path,
+                        new_size);
+    }
+  } catch (...) {
+    ReturnSFTPSession(sftp);
+    throw;
+  }
 }
 
 } // namespace duckdb
