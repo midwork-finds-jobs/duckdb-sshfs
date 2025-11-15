@@ -82,6 +82,81 @@ COPY data TO 'ssh://host/path/file.csv';
 - `sshfs_chunk_size`: Size of each chunk in bytes (default: 50MB)
 - `sshfs_timeout`: Connection timeout in seconds (default: 30)
 
+## Server Compatibility
+
+The extension automatically detects and supports two types of SSH/SFTP servers:
+
+### Full SSH Servers (with command execution)
+
+Servers that support both SFTP protocol **and** SSH command execution (like `dd`, `mkdir -p`, `truncate`).
+
+#### Example: Hetzner Storage Box on Port 23
+
+```sql
+CREATE SECRET hetzner_ssh (
+    TYPE SSH,
+    USERNAME 'u123456',
+    PASSWORD 'your-password',
+    PORT 23,  -- Full SSH support on port 23
+    HOSTNAME 'u123456.your-storagebox.de'
+);
+```
+
+**Operations:**
+
+- ✅ Directory creation: Uses `mkdir -p` command (faster)
+- ✅ File reads: Uses `dd` command for efficient random access (~115ms for small reads)
+- ✅ File writes: Uses SFTP protocol
+- ✅ File truncate: Uses `truncate` command
+- ✅ Directory removal: Uses `rmdir` command
+
+### SFTP-Only Servers (without command execution)
+
+Servers that only support the SFTP protocol without SSH command execution capability.
+
+#### Example: Hetzner Storage Box on Port 22
+
+```sql
+CREATE SECRET hetzner_sftp (
+    TYPE SSH,
+    USERNAME 'u123456',
+    PASSWORD 'your-password',
+    PORT 22,  -- SFTP-only on port 22
+    HOSTNAME 'u123456.your-storagebox.de'
+);
+```
+
+**Operations:**
+
+- ✅ Directory creation: Uses SFTP `mkdir` recursively
+- ✅ File reads: Uses SFTP `read` with seeking (~195ms for small reads)
+- ✅ File writes: Uses SFTP protocol
+- ✅ File truncate: Uses SFTP `fsetstat`
+- ✅ Directory removal: Uses SFTP `rmdir`
+
+### Automatic Detection
+
+The extension automatically detects server capabilities when connecting:
+
+```text
+[DETECT] Server supports SSH command execution        # Full SSH server
+[DETECT] Server does not support command execution     # SFTP-only server
+```
+
+**No configuration needed!** The extension automatically uses the most efficient method available for each server.
+
+### Performance Comparison
+
+For small file operations on Hetzner Storage Box:
+
+| Operation | Full SSH (Port 23) | SFTP-Only (Port 22) | Difference |
+|-----------|-------------------|---------------------|------------|
+| Read 53 bytes | 115ms (dd command) | 195ms (SFTP read) | ~40% slower |
+| Directory creation | Fast (mkdir -p) | Slightly slower (recursive SFTP mkdir) | Minimal |
+| Large file reads/writes | Similar performance (both use SFTP) | Similar performance | Negligible |
+
+**Recommendation:** Use port 23 (full SSH) for Hetzner Storage Boxes when available for better read performance. Port 22 (SFTP-only) works perfectly but reads are slightly slower.
+
 ## How It Works
 
 1. **Data Generation**: DuckDB generates data and writes it to the SSHFS file handle
