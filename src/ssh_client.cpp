@@ -602,9 +602,11 @@ SSHClient::GetFileStats(const std::string &remote_path) {
                       std::chrono::steady_clock::now() - stats_start)
                       .count();
 
-  std::cerr << "  [STAT] GetFileStats for " << remote_path
-            << " (init=" << sftp_init_ms << "ms, stat=" << stat_ms
-            << "ms, total=" << total_ms << "ms)" << std::endl;
+  if (IsDebugLoggingEnabled()) {
+    std::cerr << "  [STAT] GetFileStats for " << remote_path
+              << " (init=" << sftp_init_ms << "ms, stat=" << stat_ms
+              << "ms, total=" << total_ms << "ms)" << std::endl;
+  }
 
   return attrs;
 }
@@ -707,14 +709,16 @@ size_t SSHClient::ReadBytes(const std::string &remote_path, char *buffer,
                       read_end - read_start)
                       .count();
 
-  double mb_size = total_read / (1024.0 * 1024.0);
-  double mb_per_sec = total_ms > 0 ? (mb_size / (total_ms / 1000.0)) : 0;
-  std::cerr << "  [READ-DD] offset=" << offset << " length=" << length
-            << " read=" << total_read << " bytes in " << total_ms << "ms ("
-            << mb_per_sec << " MB/s)" << std::endl;
-  std::cerr << "    [BREAKDOWN] channel_open=" << channel_open_ms
-            << "ms, exec=" << exec_ms << "ms, actual_read=" << actual_read_ms
-            << "ms, close=" << close_ms << "ms" << std::endl;
+  if (IsDebugLoggingEnabled()) {
+    double mb_size = total_read / (1024.0 * 1024.0);
+    double mb_per_sec = total_ms > 0 ? (mb_size / (total_ms / 1000.0)) : 0;
+    std::cerr << "  [READ-DD] offset=" << offset << " length=" << length
+              << " read=" << total_read << " bytes in " << total_ms << "ms ("
+              << mb_per_sec << " MB/s)" << std::endl;
+    std::cerr << "    [BREAKDOWN] channel_open=" << channel_open_ms
+              << "ms, exec=" << exec_ms << "ms, actual_read=" << actual_read_ms
+              << "ms, close=" << close_ms << "ms" << std::endl;
+  }
 
   return total_read;
 }
@@ -724,8 +728,10 @@ void SSHClient::InitializeSFTPPool() {
     return;
   }
 
-  std::cerr << "  [POOL] Initializing SFTP session pool with " << pool_size
-            << " sessions..." << std::endl;
+  if (IsDebugLoggingEnabled()) {
+    std::cerr << "  [POOL] Initializing SFTP session pool with " << pool_size
+              << " sessions..." << std::endl;
+  }
 
   auto pool_start = std::chrono::steady_clock::now();
 
@@ -746,8 +752,10 @@ void SSHClient::InitializeSFTPPool() {
                      pool_end - pool_start)
                      .count();
 
-  std::cerr << "  [POOL] Initialized " << pool_size << " SFTP sessions in "
-            << pool_ms << "ms" << std::endl;
+  if (IsDebugLoggingEnabled()) {
+    std::cerr << "  [POOL] Initialized " << pool_size << " SFTP sessions in "
+              << pool_ms << "ms" << std::endl;
+  }
 }
 
 void SSHClient::CleanupSFTPPool() {

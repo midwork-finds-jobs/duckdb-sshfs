@@ -1,5 +1,6 @@
 #include "sshfs_file_handle.hpp"
 #include "duckdb/common/exception.hpp"
+#include "ssh_helpers.hpp"
 #include "sshfs_filesystem.hpp"
 #include <algorithm>
 #include <chrono>
@@ -42,7 +43,9 @@ void SSHFSFileHandle::Close() {
       auto flush_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                           flush_end - flush_start)
                           .count();
-      std::cerr << "[TIMING] Final Flush: " << flush_ms << "ms" << std::endl;
+      if (IsDebugLoggingEnabled()) {
+        std::cerr << "[TIMING] Final Flush: " << flush_ms << "ms" << std::endl;
+      }
     } catch (std::exception &e) {
       // Rethrow - no cleanup needed with direct append
       throw;
@@ -53,8 +56,10 @@ void SSHFSFileHandle::Close() {
   if (chunk_count > 0) {
     auto wait_start = std::chrono::steady_clock::now();
     size_t initial_uploads = uploads_in_progress.load();
-    std::cerr << "[TIMING] Waiting for " << initial_uploads
-              << " async uploads to complete..." << std::endl;
+    if (IsDebugLoggingEnabled()) {
+      std::cerr << "[TIMING] Waiting for " << initial_uploads
+                << " async uploads to complete..." << std::endl;
+    }
 
     std::unique_lock<std::mutex> lock(buffers_lock);
     upload_complete_cv.wait(
@@ -64,8 +69,10 @@ void SSHFSFileHandle::Close() {
     auto wait_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                        wait_end - wait_start)
                        .count();
-    std::cerr << "[TIMING] All uploads completed in " << wait_ms << "ms"
-              << std::endl;
+    if (IsDebugLoggingEnabled()) {
+      std::cerr << "[TIMING] All uploads completed in " << wait_ms << "ms"
+                << std::endl;
+    }
 
     // Check for errors after all uploads complete
     CheckUploadErrors();
@@ -77,7 +84,9 @@ void SSHFSFileHandle::Close() {
   auto close_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                       close_end - close_start)
                       .count();
-  std::cerr << "[TIMING] Total Close: " << close_ms << "ms" << std::endl;
+  if (IsDebugLoggingEnabled()) {
+    std::cerr << "[TIMING] Total Close: " << close_ms << "ms" << std::endl;
+  }
 }
 
 int64_t SSHFSFileHandle::Write(void *buffer, int64_t nr_bytes) {
@@ -125,8 +134,10 @@ int64_t SSHFSFileHandle::Read(void *buffer, int64_t nr_bytes) {
 
   auto read_start = std::chrono::steady_clock::now();
 
-  std::cerr << "  [READ-REQUEST] DuckDB requesting " << nr_bytes
-            << " bytes at position " << file_position << std::endl;
+  if (IsDebugLoggingEnabled()) {
+    std::cerr << "  [READ-REQUEST] DuckDB requesting " << nr_bytes
+              << " bytes at position " << file_position << std::endl;
+  }
 
   // Use SSH dd command for efficient range reads (like HTTP range requests)
   // This only transfers the exact bytes needed over the network
@@ -141,8 +152,10 @@ int64_t SSHFSFileHandle::Read(void *buffer, int64_t nr_bytes) {
   auto read_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                      read_end - read_start)
                      .count();
-  std::cerr << "  [READ-COMPLETE] Read " << bytes_read << " bytes in "
-            << read_ms << "ms" << std::endl;
+  if (IsDebugLoggingEnabled()) {
+    std::cerr << "  [READ-COMPLETE] Read " << bytes_read << " bytes in "
+              << read_ms << "ms" << std::endl;
+  }
 
   return static_cast<int64_t>(bytes_read);
 }
@@ -164,10 +177,12 @@ void SSHFSFileHandle::FlushChunk() {
   buffer->part_no = chunk_count;
   buffer->data = std::move(write_buffer); // Move to avoid copy
 
-  double mb_size = buffer->data.size() / (1024.0 * 1024.0);
-  std::cerr << "[TIMING] FlushChunk #" << chunk_count << " (" << mb_size
-            << " MB) - queueing for async "
-            << (chunk_count == 0 ? "upload" : "append") << std::endl;
+  if (IsDebugLoggingEnabled()) {
+    double mb_size = buffer->data.size() / (1024.0 * 1024.0);
+    std::cerr << "[TIMING] FlushChunk #" << chunk_count << " (" << mb_size
+              << " MB) - queueing for async "
+              << (chunk_count == 0 ? "upload" : "append") << std::endl;
+  }
 
   // Wait if too many uploads in progress
   {
@@ -197,8 +212,10 @@ void SSHFSFileHandle::FlushChunk() {
   auto chunk_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                       chunk_end - chunk_start)
                       .count();
-  std::cerr << "[TIMING] FlushChunk #" << (chunk_count - 1) << " queued in "
-            << chunk_ms << "ms (upload continues in background)" << std::endl;
+  if (IsDebugLoggingEnabled()) {
+    std::cerr << "[TIMING] FlushChunk #" << (chunk_count - 1) << " queued in "
+              << chunk_ms << "ms (upload continues in background)" << std::endl;
+  }
 }
 
 void SSHFSFileHandle::OpenForRead() {
@@ -244,9 +261,11 @@ void SSHFSFileHandle::OpenForRead() {
                      open_end - open_start)
                      .count();
 
-  std::cerr << "  [READ-INIT] SFTP init: " << sftp_init_ms
-            << "ms, file open: " << file_open_ms << "ms, total: " << open_ms
-            << "ms (CACHED for file lifetime)" << std::endl;
+  if (IsDebugLoggingEnabled()) {
+    std::cerr << "  [READ-INIT] SFTP init: " << sftp_init_ms
+              << "ms, file open: " << file_open_ms << "ms, total: " << open_ms
+              << "ms (CACHED for file lifetime)" << std::endl;
+  }
 }
 
 void SSHFSFileHandle::CloseReadHandle() {
@@ -290,11 +309,13 @@ void SSHFSFileHandle::UploadChunkAsync(
 
     try {
       bool is_first_chunk = (buffer->part_no == 0);
-      std::cerr << "  [ASYNC] Starting background "
-                << (is_first_chunk ? "upload" : "append") << " of chunk #"
-                << buffer->part_no << " ("
-                << buffer->data.size() / (1024.0 * 1024.0) << " MB)"
-                << std::endl;
+      if (IsDebugLoggingEnabled()) {
+        std::cerr << "  [ASYNC] Starting background "
+                  << (is_first_chunk ? "upload" : "append") << " of chunk #"
+                  << buffer->part_no << " ("
+                  << buffer->data.size() / (1024.0 * 1024.0) << " MB)"
+                  << std::endl;
+      }
 
       // Upload directly to final file (append for chunks after first)
       ssh_client->UploadChunk(path, buffer->data.data(), buffer->data.size(),
@@ -309,14 +330,18 @@ void SSHFSFileHandle::UploadChunkAsync(
       auto upload_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                            upload_end - upload_start)
                            .count();
-      double mb_per_sec =
-          buffer->data.size() / (1024.0 * 1024.0) / (upload_ms / 1000.0);
-      std::cerr << "  [ASYNC] Completed chunk #" << buffer->part_no << " in "
-                << upload_ms << "ms (" << mb_per_sec << " MB/s)" << std::endl;
+      if (IsDebugLoggingEnabled()) {
+        double mb_per_sec =
+            buffer->data.size() / (1024.0 * 1024.0) / (upload_ms / 1000.0);
+        std::cerr << "  [ASYNC] Completed chunk #" << buffer->part_no << " in "
+                  << upload_ms << "ms (" << mb_per_sec << " MB/s)" << std::endl;
+      }
 
     } catch (...) {
-      std::cerr << "  [ASYNC] ERROR uploading chunk #" << buffer->part_no
-                << std::endl;
+      if (IsDebugLoggingEnabled()) {
+        std::cerr << "  [ASYNC] ERROR uploading chunk #" << buffer->part_no
+                  << std::endl;
+      }
 
       // Capture first error
       bool expected_error = false;
@@ -336,13 +361,17 @@ void SSHFSFileHandle::UploadChunkAsync(
 
 LIBSSH2_SFTP_ATTRIBUTES SSHFSFileHandle::GetCachedFileStats() {
   if (!stats_cached) {
-    std::cerr << "  [CACHE] First GetFileStats - caching for file lifetime"
-              << std::endl;
+    if (IsDebugLoggingEnabled()) {
+      std::cerr << "  [CACHE] First GetFileStats - caching for file lifetime"
+                << std::endl;
+    }
     cached_file_stats = ssh_client->GetFileStats(path);
     stats_cached = true;
   } else {
-    std::cerr << "  [CACHE] Using cached file stats (avoiding SFTP call)"
-              << std::endl;
+    if (IsDebugLoggingEnabled()) {
+      std::cerr << "  [CACHE] Using cached file stats (avoiding SFTP call)"
+                << std::endl;
+    }
   }
   return cached_file_stats;
 }

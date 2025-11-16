@@ -34,6 +34,12 @@
   # https://devenv.sh/languages/
   languages.cplusplus.enable = true;
 
+  scripts.integration-test.exec = ''
+    ./scripts/run_sshfs_test_server.sh
+    source ./scripts/set_sshfs_test_server_variables.sh
+    ./build/release/test/unittest "test/*"
+  '';
+
   git-hooks.hooks = {
     # Nix files
     nixfmt-rfc-style.enable = true;
