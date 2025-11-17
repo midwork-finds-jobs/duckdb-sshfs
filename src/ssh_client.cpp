@@ -183,6 +183,15 @@ void SSHClient::InitializeSession() {
   // Set timeout
   libssh2_session_set_timeout(session, params.timeout_seconds * 1000);
 
+  // Configure keepalive to prevent idle connection timeouts
+  // Send keepalive packets every N seconds to keep connection alive
+  // want_reply=0 means we don't wait for server response (faster)
+  if (params.keepalive_interval > 0) {
+    libssh2_keepalive_config(session, 0, params.keepalive_interval);
+    SSHFS_LOG("  [KEEPALIVE] Configured keepalive interval: "
+              << params.keepalive_interval << " seconds");
+  }
+
   // Perform SSH handshake
   int rc = libssh2_session_handshake(session, sock);
   if (rc != 0) {

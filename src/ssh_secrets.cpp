@@ -49,6 +49,7 @@ void CreateSSHSecretFunctions::Register(ExtensionLoader &loader) {
   ssh_config_fun.named_parameters["max_retries"] = LogicalType::INTEGER;
   ssh_config_fun.named_parameters["initial_retry_delay_ms"] =
       LogicalType::INTEGER;
+  ssh_config_fun.named_parameters["keepalive_interval"] = LogicalType::INTEGER;
   ssh_config_fun.named_parameters["chunk_size"] = LogicalType::UBIGINT;
   ssh_config_fun.named_parameters["max_concurrent_uploads"] =
       LogicalType::UBIGINT;

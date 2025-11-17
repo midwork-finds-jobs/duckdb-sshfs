@@ -30,6 +30,7 @@ struct SSHConnectionParams {
   int max_retries = 3;       // Maximum connection retry attempts
   int initial_retry_delay_ms =
       1000; // Initial delay between retries (exponential backoff)
+  int keepalive_interval = 60; // Send keepalive every 60 seconds (0 = disabled)
 
   // Upload performance tuning
   size_t chunk_size = 50 * 1024 * 1024; // 50MB default chunk size

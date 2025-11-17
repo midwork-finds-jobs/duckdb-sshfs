@@ -437,6 +437,9 @@ SSHConnectionParams SSHFSFileSystem::ParseURL(const string &path,
               if (secret->TryGetValue("initial_retry_delay_ms", value)) {
                 params.initial_retry_delay_ms = value.GetValue<int>();
               }
+              if (secret->TryGetValue("keepalive_interval", value)) {
+                params.keepalive_interval = value.GetValue<int>();
+              }
               if (secret->TryGetValue("chunk_size", value)) {
                 params.chunk_size = value.GetValue<uint64_t>();
               }
@@ -480,6 +483,13 @@ SSHConnectionParams SSHFSFileSystem::ParseURL(const string &path,
       if (params.initial_retry_delay_ms == 1000) { // default value
         params.initial_retry_delay_ms =
             static_cast<int>(value.GetValue<int64_t>());
+      }
+    }
+
+    if (FileOpener::TryGetCurrentSetting(opener, "sshfs_keepalive_interval",
+                                         value)) {
+      if (params.keepalive_interval == 60) { // default value
+        params.keepalive_interval = static_cast<int>(value.GetValue<int64_t>());
       }
     }
 
