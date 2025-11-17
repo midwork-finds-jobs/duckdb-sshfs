@@ -49,12 +49,6 @@ clean
 ### Running Tests
 
 ```bash
-# Run test.sql (uses SSH key authentication)
-test
-
-# Run test2.sql (uses password authentication)
-test2
-
 # Test direct SSH connection
 test-ssh
 

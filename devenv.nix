@@ -136,34 +136,6 @@
       '';
     };
 
-    test = {
-      description = "Run test.sql";
-      exec = ''
-        if [ ! -f "build/release/duckdb" ]; then
-          echo "❌ Error: build/release/duckdb not found"
-          echo "Run 'build-release' first"
-          exit 1
-        fi
-
-        echo "Running test.sql..."
-        ./build/release/duckdb -unsigned -f test.sql
-      '';
-    };
-
-    test2 = {
-      description = "Run test2.sql (password auth)";
-      exec = ''
-        if [ ! -f "build/release/duckdb" ]; then
-          echo "❌ Error: build/release/duckdb not found"
-          echo "Run 'build-release' first"
-          exit 1
-        fi
-
-        echo "Running test2.sql (password auth)..."
-        ./build/release/duckdb -unsigned -f test2.sql
-      '';
-    };
-
     test-ssh = {
       description = "Test direct SSH connection";
       exec = ''
