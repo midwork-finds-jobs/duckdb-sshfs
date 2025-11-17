@@ -4,6 +4,7 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 #include "ssh_config.hpp"
+#include "ssh_helpers.hpp"
 #include "sshfs_file_handle.hpp"
 #include <ctime>
 #include <regex>
@@ -102,16 +103,26 @@ bool SSHFSFileSystem::FileExists(const string &filename,
                                  optional_ptr<FileOpener> opener) {
   try {
     auto params = ParseURL(filename, opener.get());
+    SSHFS_LOG("  [EXISTS] Checking if file exists: " << filename);
+    SSHFS_LOG("  [EXISTS] Remote path: " << params.remote_path);
+
     auto client = GetOrCreateClient(filename, opener.get());
 
     if (!client->IsConnected()) {
+      SSHFS_LOG("  [EXISTS] Client not connected, connecting...");
       client->Connect();
     }
 
     // Use SFTP to check if file exists by getting stats
+    SSHFS_LOG("  [EXISTS] Calling GetFileStats for: " << params.remote_path);
     client->GetFileStats(params.remote_path);
+    SSHFS_LOG("  [EXISTS] File exists!");
     return true;
+  } catch (const std::exception &e) {
+    SSHFS_LOG("  [EXISTS] Exception: " << e.what());
+    return false;
   } catch (...) {
+    SSHFS_LOG("  [EXISTS] Unknown exception");
     return false;
   }
 }

@@ -192,11 +192,38 @@ void SSHClient::InitializeSession() {
               << params.keepalive_interval << " seconds");
   }
 
+  // Set preferred KEX algorithms
+  // Start with widely-supported older algorithms that libssh2 definitely
+  // supports Then include modern ones if available
+  const char *kex_algorithms = "diffie-hellman-group14-sha256,"
+                               "diffie-hellman-group14-sha1,"
+                               "diffie-hellman-group-exchange-sha256,"
+                               "diffie-hellman-group-exchange-sha1,"
+                               "diffie-hellman-group1-sha1,"
+                               "curve25519-sha256,curve25519-sha256@libssh.org,"
+                               "diffie-hellman-group16-sha512,"
+                               "diffie-hellman-group18-sha512";
+  int kex_rc =
+      libssh2_session_method_pref(session, LIBSSH2_METHOD_KEX, kex_algorithms);
+  if (kex_rc != 0) {
+    SSHFS_LOG("  [KEX] Warning: Could not set KEX algorithm preferences (rc="
+              << kex_rc << ")");
+  } else {
+    SSHFS_LOG("  [KEX] Set KEX algorithm preferences: " << kex_algorithms);
+  }
+
   // Perform SSH handshake
+  SSHFS_LOG("  [HANDSHAKE] Starting SSH handshake...");
   int rc = libssh2_session_handshake(session, sock);
   if (rc != 0) {
     char *err_msg;
-    libssh2_session_last_error(session, &err_msg, nullptr, 0);
+    int err_len;
+    libssh2_session_last_error(session, &err_msg, &err_len, 0);
+
+    SSHFS_LOG("  [HANDSHAKE] Failed with error code: " << rc);
+    SSHFS_LOG(
+        "  [HANDSHAKE] Error message: " << (err_msg ? err_msg : "Unknown"));
+
     CleanupSession();
 
     // Provide specific guidance based on error code
@@ -205,9 +232,12 @@ void SSHClient::InitializeSession() {
       suggestion = "\n  → Connection timed out during handshake\n"
                    "  → Server may be slow or overloaded";
     } else if (rc == LIBSSH2_ERROR_KEY_EXCHANGE_FAILURE) {
-      suggestion = "\n  → SSH key exchange failed\n"
-                   "  → Server and client may have incompatible encryption "
-                   "algorithms";
+      suggestion =
+          "\n  → SSH key exchange failed\n"
+          "  → Server and client may have incompatible encryption "
+          "algorithms\n"
+          "  → libssh2 may not support the server's preferred algorithms\n"
+          "  → Try upgrading libssh2 or use OpenSSH command-line tools";
     }
 
     throw IOException("SSH handshake failed for %s@%s:%d\n"
@@ -217,6 +247,8 @@ void SSHClient::InitializeSession() {
                       params.port, rc, err_msg ? err_msg : "Unknown error",
                       suggestion);
   }
+
+  SSHFS_LOG("  [HANDSHAKE] SSH handshake successful!");
 
   // Configure keepalive to detect dead connections (after handshake succeeds)
   libssh2_keepalive_config(session, 1, 60); // Send keepalive every 60s
