@@ -62,11 +62,15 @@ test-ssh
 integration-test
 ```
 
-## Why `devenv build` Doesn't Work
+## Why `devenv build` Is Not Recommended
 
-This project uses git submodules (vcpkg, extension-ci-tools) which are incompatible with Nix's source filtering. Nix excludes `.git` files that git submodules rely on, so `devenv build` (which creates pure Nix derivations) cannot work with this project structure.
+While `devenv build` outputs have been implemented, they are experimental and not recommended because:
 
-**The correct way to build is using the devenv shell scripts** (see "Building the Extension" section above).
+1. **vcpkg bootstrap issues**: vcpkg needs to download packages and compile in the Nix sandbox, which has limitations
+2. **Long build times**: Full DuckDB + extensions build can take 30+ minutes
+3. **Complexity**: The build requires network access and dynamic compilation not suited for pure Nix derivations
+
+**The recommended way to build is using the devenv shell scripts** (see "Building the Extension" section above), which work reliably and leverage caching.
 
 ## Build Artifacts
 

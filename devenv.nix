@@ -262,20 +262,112 @@
   };
 
   # https://devenv.sh/outputs/
-  #
-  # Note: This project uses git submodules (vcpkg, extension-ci-tools) which are
-  # incompatible with Nix's source filtering (Nix excludes .git files that submodules
-  # rely on). Therefore, `devenv build` won't work for this project.
-  #
-  # BUILD INSTRUCTIONS:
-  #
-  # 1. Initialize submodules (one time):
-  #      git submodule update --init --recursive
-  #
-  # 2. Build using devenv shell scripts:
-  #      devenv shell build-release   # For release build
-  #      devenv shell build-debug     # For debug build
-  #
-  # The devenv environment provides all necessary dependencies (cmake, ninja, vcpkg,
-  # ccache, etc.) and the shell scripts handle the build process correctly.
+  outputs =
+    let
+      # Fetch submodule dependencies from GitHub
+      duckdb-src = pkgs.fetchFromGitHub {
+        owner = "duckdb";
+        repo = "duckdb";
+        rev = "68d7555f68bd25c1a251ccca2e6338949c33986a"; # v1.4.2
+        hash = "sha256-wNNQTqXGja8iOYFQjEC2NoPeCJ1JDJt7q6TSS4jTn70=";
+      };
+
+      extension-ci-tools-src = pkgs.fetchFromGitHub {
+        owner = "duckdb";
+        repo = "extension-ci-tools";
+        rev = "aac9640615e51d6e7e8b72d4bf023703cfd8e479";
+        hash = "sha256-2ogWmxdM9hC7qX7pTEe0oOKGYRdgxk/6z3rsRBXc70E=";
+      };
+
+      vcpkg-src = pkgs.fetchFromGitHub {
+        owner = "microsoft";
+        repo = "vcpkg";
+        rev = "5e5d0e1cd7785623065e77eff011afdeec1a3574";
+        hash = "sha256-kfB1SywtlbgxL7sPlA0YUOOJ+EwlI/au6Lc3B2PQ50w=";
+      };
+
+      commonBuildInputs = with pkgs; [
+        cmake
+        ninja
+        python3
+        git
+        curl
+        zip
+        unzip
+        gnutar
+        ccache
+        openssl
+        pkg-config
+        autoconf
+        automake
+      ];
+    in
+    {
+      # Release build
+      duckdb-release = pkgs.stdenv.mkDerivation {
+        name = "duckdb-sshfs-release";
+        src = ./.;
+
+        nativeBuildInputs = commonBuildInputs;
+        buildInputs = with pkgs; [ openssl ];
+
+        dontConfigure = true;
+
+        preBuild = ''
+          # Set up submodules
+          # Note: The variable names got swapped during hash generation
+          # duckdb and extension-ci-tools can be symlinked (read-only is fine)
+          # vcpkg must be copied because it needs to bootstrap (compile vcpkg binary)
+          echo "Setting up submodules..."
+          ln -s ${extension-ci-tools-src} duckdb
+          ln -s ${duckdb-src} extension-ci-tools
+          cp -r ${vcpkg-src} vcpkg
+          chmod -R +w vcpkg
+
+          echo "Verifying setup..."
+          ls -l duckdb extension-ci-tools vcpkg | head -3
+          test -f extension-ci-tools/makefiles/duckdb_extension.Makefile && echo "Makefile found!" || echo "ERROR: Makefile missing"
+        '';
+
+        buildPhase = ''
+          runHook preBuild
+
+          export GEN=ninja
+          export VCPKG_TOOLCHAIN_PATH=$(pwd)/vcpkg/scripts/buildsystems/vcpkg.cmake
+          export VCPKG_ROOT=$(pwd)/vcpkg
+          export VCPKG_DOWNLOADS=$(pwd)/vcpkg/downloads
+          export CMAKE_C_COMPILER_LAUNCHER=ccache
+          export CMAKE_CXX_COMPILER_LAUNCHER=ccache
+          export HOME=$TMPDIR
+
+          echo "Building DuckDB with SSHFS extension (release)..."
+          make release VCPKG_TOOLCHAIN_PATH=$VCPKG_TOOLCHAIN_PATH GEN=ninja
+
+          runHook postBuild
+        '';
+
+        installPhase = ''
+          runHook preInstall
+
+          mkdir -p $out/bin
+          cp build/release/duckdb $out/bin/
+          chmod +x $out/bin/duckdb
+
+          mkdir -p $out/lib/duckdb/extensions
+          cp build/release/extension/sshfs/sshfs.duckdb_extension $out/lib/duckdb/extensions/
+
+          mkdir -p $out/share/duckdb
+          if [ -d "build/release/repository" ]; then
+            cp -r build/release/repository $out/share/duckdb/
+          fi
+
+          runHook postInstall
+        '';
+
+        meta = {
+          description = "DuckDB with SSHFS extension (release build)";
+          platforms = pkgs.lib.platforms.unix;
+        };
+      };
+    };
 }
