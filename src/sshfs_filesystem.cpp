@@ -306,16 +306,17 @@ SSHConnectionParams SSHFSFileSystem::ParseURL(const string &path,
   // Extract the remote path (match[4] is the /path/to/file or :path part)
   if (matches[4].matched) {
     params.remote_path = matches[4].str();
-    // Handle both URL-style (/path) and SCP-style (:path)
-    if (!params.remote_path.empty()) {
-      if (params.remote_path[0] == '/') {
-        // URL-style: remove leading slash (relative to home directory)
-        params.remote_path = params.remote_path.substr(1);
-      } else if (params.remote_path[0] == ':') {
-        // SCP-style: remove leading colon, path is as-is (can be ~ or absolute)
-        params.remote_path = params.remote_path.substr(1);
-      }
+    // Handle SCP-style paths like scp:
+    // - ssh://host:file = relative to home directory (file)
+    // - ssh://host:/path/file = absolute path (/path/file)
+    if (!params.remote_path.empty() && params.remote_path[0] == ':') {
+      // SCP-style: remove leading colon, keep rest as-is
+      // If path after colon starts with /, it's absolute
+      // If path after colon doesn't start with /, it's relative to home
+      params.remote_path = params.remote_path.substr(1);
     }
+    // Note: If path starts with / without colon (old URL style), keep it
+    // as-is for backwards compatibility, but this should be deprecated
   }
 
   // Look up SSH config (~/.ssh/config) to get default connection parameters
