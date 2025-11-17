@@ -9,6 +9,24 @@
 
 namespace duckdb {
 
+// Global mutex to serialize all SFTP reads across all file handles
+// Critical for servers with strict SFTP session limits (e.g., Hetzner)
+// Ensures only one file handle reads at a time, sharing the single SFTP session
+static std::mutex g_sftp_read_mutex;
+
+// Global cache of SFTP file handles (one per file path)
+// Allows multiple DuckDB file handles to share one SFTP file handle
+// Key: file path, Value: {sftp_session, file_handle, read_mutex}
+struct GlobalFileHandle {
+  LIBSSH2_SFTP *sftp;
+  LIBSSH2_SFTP_HANDLE *handle;
+  std::shared_ptr<SSHClient> client;
+  std::shared_ptr<std::mutex>
+      read_mutex; // Protects concurrent reads on this handle
+};
+static std::unordered_map<std::string, GlobalFileHandle> g_file_handles;
+static std::mutex g_file_handles_mutex;
+
 SSHFSFileHandle::SSHFSFileHandle(FileSystem &file_system, std::string path,
                                  FileOpenFlags flags,
                                  std::shared_ptr<SSHClient> client,
@@ -19,6 +37,8 @@ SSHFSFileHandle::SSHFSFileHandle(FileSystem &file_system, std::string path,
       max_concurrent_uploads(params.max_concurrent_uploads) {
   // Initialize write buffer
   write_buffer.reserve(chunk_size);
+
+  SSHFS_LOG("  [HANDLE] Created file handle for " << params.remote_path);
 }
 
 SSHFSFileHandle::~SSHFSFileHandle() {
@@ -32,8 +52,7 @@ SSHFSFileHandle::~SSHFSFileHandle() {
 void SSHFSFileHandle::Close() {
   auto close_start = std::chrono::steady_clock::now();
 
-  // Close read handle if it was opened
-  CloseReadHandle();
+  // No read handle cleanup needed - we open/close per read operation
 
   if (!write_buffer.empty() || buffer_dirty) {
     try {
@@ -132,6 +151,14 @@ int64_t SSHFSFileHandle::Read(void *buffer, int64_t nr_bytes) {
     return 0;
   }
 
+  if (!buffer) {
+    throw IOException("SSHFSFileHandle::Read: buffer is null");
+  }
+
+  if (!ssh_client) {
+    throw IOException("SSHFSFileHandle::Read: ssh_client is null");
+  }
+
   auto read_start = std::chrono::steady_clock::now();
 
   if (IsDebugLoggingEnabled()) {
@@ -139,25 +166,96 @@ int64_t SSHFSFileHandle::Read(void *buffer, int64_t nr_bytes) {
               << " bytes at position " << file_position << std::endl;
   }
 
-  // Use SSH dd command for efficient range reads (like HTTP range requests)
-  // This only transfers the exact bytes needed over the network
-  size_t bytes_read =
-      ssh_client->ReadBytes(path, static_cast<char *>(buffer), file_position,
-                            static_cast<size_t>(nr_bytes));
+  // Serialize ALL SFTP operations globally (critical for thread safety)
+  // libssh2 SFTP sessions share the same SSH socket and are NOT thread-safe
+  // We borrow single SFTP session, open file, read, close file, return session
+  // - all within this lock
+  std::lock_guard<std::mutex> lock(g_sftp_read_mutex);
+
+  if (!ssh_client->IsConnected()) {
+    ssh_client->Connect();
+  }
+
+  // Borrow the single SFTP session from pool (reused across all reads)
+  // This is safe because we close the file handle immediately after reading
+  auto sftp_borrow_start = std::chrono::steady_clock::now();
+  LIBSSH2_SFTP *sftp = ssh_client->BorrowSFTPSession();
+  auto sftp_borrow_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - sftp_borrow_start)
+          .count();
+
+  // Open file for this read
+  auto file_open_start = std::chrono::steady_clock::now();
+  LIBSSH2_SFTP_HANDLE *handle =
+      libssh2_sftp_open(sftp, path.c_str(), LIBSSH2_FXF_READ, 0);
+  if (!handle) {
+    int sftp_error = libssh2_sftp_last_error(sftp);
+    ssh_client->ReturnSFTPSession(sftp);
+    throw IOException(
+        "Failed to open remote file for reading: %s (SFTP error: %d)",
+        path.c_str(), sftp_error);
+  }
+  auto file_open_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now() - file_open_start)
+                          .count();
+
+  if (IsDebugLoggingEnabled()) {
+    std::cerr << "  [READ-OPERATION] Opened file (borrow: " << sftp_borrow_ms
+              << "ms, open: " << file_open_ms << "ms)" << std::endl;
+  }
+
+  // Seek to position
+  libssh2_sftp_seek64(handle, file_position);
+
+  // Read in chunks (64KB chunks)
+  const size_t CHUNK_SIZE = 65536;
+  size_t total_read = 0;
+  char *buf = static_cast<char *>(buffer);
+
+  while (total_read < static_cast<size_t>(nr_bytes)) {
+    size_t bytes_remaining = static_cast<size_t>(nr_bytes) - total_read;
+    size_t bytes_to_read = std::min(bytes_remaining, CHUNK_SIZE);
+
+    ssize_t nread = libssh2_sftp_read(handle, buf + total_read, bytes_to_read);
+
+    if (nread < 0) {
+      int sftp_error = libssh2_sftp_last_error(sftp);
+      if (IsDebugLoggingEnabled()) {
+        std::cerr << "  [READ-ERROR] libssh2_sftp_read failed: " << nread
+                  << ", SFTP error: " << sftp_error
+                  << ", total_read so far: " << total_read << std::endl;
+      }
+      libssh2_sftp_close(handle);
+      ssh_client->ReturnSFTPSession(sftp);
+      throw IOException("Failed to read from SFTP file: %s (libssh2 error: "
+                        "%zd, SFTP error: %d, read %zu/%lld bytes)",
+                        path, nread, sftp_error, total_read, nr_bytes);
+    } else if (nread == 0) {
+      break; // EOF
+    }
+
+    total_read += nread;
+  }
+
+  // Close file and return session to pool
+  libssh2_sftp_close(handle);
+  ssh_client->ReturnSFTPSession(sftp);
 
   // Update file position
-  file_position += bytes_read;
+  file_position += total_read;
 
   auto read_end = std::chrono::steady_clock::now();
   auto read_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                      read_end - read_start)
                      .count();
   if (IsDebugLoggingEnabled()) {
-    std::cerr << "  [READ-COMPLETE] Read " << bytes_read << " bytes in "
-              << read_ms << "ms" << std::endl;
+    std::cerr << "  [READ-COMPLETE] Read " << total_read << " bytes in "
+              << read_ms << "ms (pooled session, closed file handle)"
+              << std::endl;
   }
 
-  return static_cast<int64_t>(bytes_read);
+  return static_cast<int64_t>(total_read);
 }
 
 void SSHFSFileHandle::Seek(idx_t location) { file_position = location; }
@@ -229,36 +327,39 @@ void SSHFSFileHandle::OpenForRead() {
     ssh_client->Connect();
   }
 
-  // Initialize SFTP session (kept open for entire file handle lifetime)
+  // Borrow SFTP session from pool (shared across file handles)
+  // This allows multiple file handles to share one SFTP session efficiently
+  // Critical for servers with strict session limits (e.g., Hetzner)
   auto sftp_init_start = std::chrono::steady_clock::now();
-  read_sftp = libssh2_sftp_init(ssh_client->GetSession());
-  if (!read_sftp) {
-    throw IOException("Failed to initialize SFTP session for reading");
-  }
-  auto sftp_init_end = std::chrono::steady_clock::now();
+  read_sftp = ssh_client->BorrowSFTPSession();
   auto sftp_init_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                          sftp_init_end - sftp_init_start)
+                          std::chrono::steady_clock::now() - sftp_init_start)
                           .count();
 
   // Open file for reading (kept open for entire file handle lifetime)
   auto file_open_start = std::chrono::steady_clock::now();
   read_handle = libssh2_sftp_open(read_sftp, path.c_str(), LIBSSH2_FXF_READ, 0);
   if (!read_handle) {
+    int sftp_error = libssh2_sftp_last_error(read_sftp);
+    char *err_msg = nullptr;
+    int session_error = libssh2_session_last_error(ssh_client->GetSession(),
+                                                   &err_msg, nullptr, 0);
     libssh2_sftp_shutdown(read_sftp);
     read_sftp = nullptr;
-    throw IOException("Failed to open remote file for reading: %s",
-                      path.c_str());
+    throw IOException("Failed to open remote file for reading: %s\n"
+                      "  SFTP error: %d\n"
+                      "  Session error: %d (%s)",
+                      path.c_str(), sftp_error, session_error,
+                      err_msg ? err_msg : "Unknown error");
   }
-  auto file_open_end = std::chrono::steady_clock::now();
   auto file_open_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                          file_open_end - file_open_start)
+                          std::chrono::steady_clock::now() - file_open_start)
                           .count();
 
   read_initialized = true;
 
-  auto open_end = std::chrono::steady_clock::now();
   auto open_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                     open_end - open_start)
+                     std::chrono::steady_clock::now() - open_start)
                      .count();
 
   if (IsDebugLoggingEnabled()) {
@@ -279,7 +380,8 @@ void SSHFSFileHandle::CloseReadHandle() {
   }
 
   if (read_sftp) {
-    libssh2_sftp_shutdown(read_sftp);
+    // Return SFTP session to pool for reuse (shared across file handles)
+    ssh_client->ReturnSFTPSession(read_sftp);
     read_sftp = nullptr;
   }
 
@@ -360,20 +462,8 @@ void SSHFSFileHandle::UploadChunkAsync(
 }
 
 LIBSSH2_SFTP_ATTRIBUTES SSHFSFileHandle::GetCachedFileStats() {
-  if (!stats_cached) {
-    if (IsDebugLoggingEnabled()) {
-      std::cerr << "  [CACHE] First GetFileStats - caching for file lifetime"
-                << std::endl;
-    }
-    cached_file_stats = ssh_client->GetFileStats(path);
-    stats_cached = true;
-  } else {
-    if (IsDebugLoggingEnabled()) {
-      std::cerr << "  [CACHE] Using cached file stats (avoiding SFTP call)"
-                << std::endl;
-    }
-  }
-  return cached_file_stats;
+  // No caching - always fetch fresh stats per user request
+  return ssh_client->GetFileStats(path);
 }
 
 idx_t SSHFSFileHandle::GetProgress() {

@@ -39,6 +39,7 @@ void CreateSSHSecretFunctions::Register(ExtensionLoader &loader) {
   ssh_config_fun.named_parameters["username"] = LogicalType::VARCHAR;
   ssh_config_fun.named_parameters["password"] = LogicalType::VARCHAR;
   ssh_config_fun.named_parameters["key_path"] = LogicalType::VARCHAR;
+  ssh_config_fun.named_parameters["use_agent"] = LogicalType::BOOLEAN;
   ssh_config_fun.named_parameters["port"] = LogicalType::INTEGER;
   ssh_config_fun.named_parameters["host"] = LogicalType::VARCHAR;
   ssh_config_fun.named_parameters["hostname"] = LogicalType::VARCHAR;

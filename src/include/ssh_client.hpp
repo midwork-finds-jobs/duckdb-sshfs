@@ -19,6 +19,9 @@ struct SSHConnectionParams {
   std::string key_path;
   std::string remote_path; // Path on the remote server
 
+  // Authentication
+  bool use_agent = false; // Explicitly use SSH agent for authentication
+
   // Debug logging
   bool debug_logging = false;
 
@@ -83,13 +86,15 @@ private:
   LIBSSH2_SESSION *session = nullptr;
   bool connected = false;
   bool supports_commands = false; // Auto-detected: can execute SSH commands
-  std::mutex upload_mutex;        // Protect concurrent SFTP operations
+  bool dd_disabled =
+      false;               // Disabled after channel failures (use SFTP instead)
+  std::mutex upload_mutex; // Protect concurrent SFTP operations
 
   // SFTP session pool
   std::queue<LIBSSH2_SFTP *> sftp_pool;
   std::mutex pool_mutex;
   std::condition_variable pool_cv;
-  size_t pool_size = 2; // Match max_concurrent_uploads
+  size_t pool_size = 1; // Single SFTP session - reused across reads
   bool pool_initialized = false;
 
   void InitializeSession();

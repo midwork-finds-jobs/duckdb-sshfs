@@ -234,16 +234,28 @@ timestamp_t SSHFSFileSystem::GetLastModifiedTime(FileHandle &handle) {
 
 int64_t SSHFSFileSystem::GetFileSize(FileHandle &handle) {
   auto &sshfs_handle = dynamic_cast<SSHFSFileHandle &>(handle);
+
+  // Ensure client is connected before getting file stats
+  auto client = sshfs_handle.GetClient();
+  if (!client->IsConnected()) {
+    client->Connect();
+  }
+
   try {
     // Use cached file stats to avoid repeated SFTP sessions
     auto attrs = sshfs_handle.GetCachedFileStats();
     if (attrs.flags & LIBSSH2_SFTP_ATTR_SIZE) {
       return static_cast<int64_t>(attrs.filesize);
     }
+
+    // If size attribute is not set, return 0 (might be during write)
+    return 0;
   } catch (...) {
-    // If we can't get stats, return 0
+    // If we can't get stats (file doesn't exist yet during write), return
+    // current progress This handles temporary files created during COPY
+    // operations
+    return static_cast<int64_t>(sshfs_handle.GetProgress());
   }
-  return 0;
 }
 
 bool SSHFSFileSystem::CanSeek() {
@@ -408,6 +420,9 @@ SSHConnectionParams SSHFSFileSystem::ParseURL(const string &path,
               }
               if (secret->TryGetValue("key_path", value)) {
                 params.key_path = value.ToString();
+              }
+              if (secret->TryGetValue("use_agent", value)) {
+                params.use_agent = value.GetValue<bool>();
               }
               if (secret->TryGetValue("port", value)) {
                 params.port = value.GetValue<int>();

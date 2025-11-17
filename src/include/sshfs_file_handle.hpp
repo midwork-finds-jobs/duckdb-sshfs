@@ -74,10 +74,6 @@ private:
   LIBSSH2_SFTP_HANDLE *read_handle = nullptr;
   bool read_initialized = false;
 
-  // File stats caching - avoid repeated SFTP stat calls
-  LIBSSH2_SFTP_ATTRIBUTES cached_file_stats;
-  bool stats_cached = false;
-
   // Streaming upload members (async chunk uploads like S3)
   std::vector<std::shared_ptr<SSHFSWriteBuffer>> write_buffers;
   std::mutex buffers_lock;

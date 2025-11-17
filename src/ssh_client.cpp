@@ -18,6 +18,11 @@ namespace duckdb {
 // Thread-local debug flag
 thread_local bool g_sshfs_debug_enabled = false;
 
+// Global mutex to serialize dd command execution (SSH channels)
+// Hetzner Storage Boxes limit concurrent SSH channels
+// Serialize all dd reads to avoid overwhelming the server
+static std::mutex g_dd_command_mutex;
+
 SSHClient::SSHClient(const SSHConnectionParams &params) : params(params) {
   // Set thread-local debug flag from params
   g_sshfs_debug_enabled = params.debug_logging;
@@ -34,6 +39,15 @@ SSHClient::~SSHClient() {
 }
 
 void SSHClient::Connect() {
+  // Detect Hetzner Storage Boxes and disable dd upfront
+  // Hetzner has very strict SSH channel limits that make dd unusable for large
+  // queries
+  if (params.hostname.find("storagebox.de") != std::string::npos ||
+      params.hostname.find("your-storagebox.de") != std::string::npos) {
+    SSHFS_LOG("  [DETECT] Detected Hetzner Storage Box - disabling dd reads");
+    dd_disabled = true;
+  }
+
   if (connected) {
     return;
   }
@@ -203,7 +217,162 @@ void SSHClient::Authenticate() {
   int rc = -1;
   std::string auth_details;
 
-  // Try SSH agent authentication first if SSH_AUTH_SOCK is set
+  // Try password authentication if password is provided
+  // Password takes priority - if explicitly provided, use it exclusively
+  if (!params.password.empty()) {
+    rc = libssh2_userauth_password(session, params.username.c_str(),
+                                   params.password.c_str());
+
+    if (rc == 0) {
+      SSHFS_LOG("  [AUTH] Password authentication succeeded");
+      return; // Success
+    }
+
+    auth_details += "  → Password authentication failed\n"
+                    "    Check username and password are correct\n";
+
+    // Password was provided but failed - don't try other methods
+    char *err_msg;
+    libssh2_session_last_error(session, &err_msg, nullptr, 0);
+    CleanupSession();
+
+    throw IOException("SSH authentication failed for %s@%s:%d\n"
+                      "%s"
+                      "  libssh2 error: %s (code: %d)",
+                      params.username.c_str(), params.hostname.c_str(),
+                      params.port, auth_details.c_str(),
+                      err_msg ? err_msg : "Unknown error", rc);
+  }
+
+  // Try public key authentication if key path is provided
+  // Key takes priority over SSH agent - if explicitly provided, use it
+  // exclusively
+  if (!params.key_path.empty()) {
+    std::string public_key = params.key_path + ".pub";
+    rc = libssh2_userauth_publickey_fromfile(session, params.username.c_str(),
+                                             public_key.c_str(),
+                                             params.key_path.c_str(),
+                                             nullptr // No passphrase
+    );
+
+    if (rc == 0) {
+      SSHFS_LOG("  [AUTH] Public key authentication succeeded");
+      return; // Success
+    }
+
+    // Build detailed error message
+    auth_details = "  → Public key authentication failed\n";
+    if (rc == LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED) {
+      auth_details += "    Key was rejected by server (invalid key or user)\n";
+    } else if (rc == LIBSSH2_ERROR_FILE) {
+      auth_details += "    Could not read key file\n";
+    }
+    auth_details +=
+        "    Key file: " + params.key_path +
+        "\n"
+        "    Check: file exists, has correct permissions (chmod 600), and "
+        "matches server's authorized_keys\n"
+        "    Try: ssh -i " +
+        params.key_path + " -p " + std::to_string(params.port) + " " +
+        params.username + "@" + params.hostname + "\n";
+
+    // Key was provided but failed - don't try other methods
+    char *err_msg;
+    libssh2_session_last_error(session, &err_msg, nullptr, 0);
+    CleanupSession();
+
+    throw IOException("SSH authentication failed for %s@%s:%d\n"
+                      "%s"
+                      "  libssh2 error: %s (code: %d)",
+                      params.username.c_str(), params.hostname.c_str(),
+                      params.port, auth_details.c_str(),
+                      err_msg ? err_msg : "Unknown error", rc);
+  }
+
+  // Try SSH agent authentication if explicitly enabled
+  // Only used when use_agent is true and neither password nor key_path is
+  // provided
+  if (params.use_agent) {
+    const char *ssh_auth_sock = getenv("SSH_AUTH_SOCK");
+    if (!ssh_auth_sock || strlen(ssh_auth_sock) == 0) {
+      CleanupSession();
+      throw IOException(
+          "SSH authentication failed for %s@%s:%d\n"
+          "  SSH agent authentication requested but SSH_AUTH_SOCK is not set\n"
+          "  → Start SSH agent: eval $(ssh-agent -s)\n"
+          "  → Add key to agent: ssh-add ~/.ssh/id_rsa",
+          params.username.c_str(), params.hostname.c_str(), params.port);
+    }
+
+    LIBSSH2_AGENT *agent = libssh2_agent_init(session);
+    if (!agent) {
+      CleanupSession();
+      throw IOException("SSH authentication failed for %s@%s:%d\n"
+                        "  Failed to initialize SSH agent",
+                        params.username.c_str(), params.hostname.c_str(),
+                        params.port);
+    }
+
+    if (libssh2_agent_connect(agent) != 0) {
+      libssh2_agent_free(agent);
+      CleanupSession();
+      throw IOException("SSH authentication failed for %s@%s:%d\n"
+                        "  Failed to connect to SSH agent",
+                        params.username.c_str(), params.hostname.c_str(),
+                        params.port);
+    }
+
+    if (libssh2_agent_list_identities(agent) != 0) {
+      libssh2_agent_disconnect(agent);
+      libssh2_agent_free(agent);
+      CleanupSession();
+      throw IOException("SSH authentication failed for %s@%s:%d\n"
+                        "  Failed to list identities from SSH agent",
+                        params.username.c_str(), params.hostname.c_str(),
+                        params.port);
+    }
+
+    struct libssh2_agent_publickey *identity = nullptr;
+    struct libssh2_agent_publickey *prev = nullptr;
+    bool agent_auth_success = false;
+
+    // Try each identity from the agent
+    while (libssh2_agent_get_identity(agent, &identity, prev) == 0) {
+      if (libssh2_agent_userauth(agent, params.username.c_str(), identity) ==
+          0) {
+        // Success! Clean up agent and return
+        libssh2_agent_disconnect(agent);
+        libssh2_agent_free(agent);
+        SSHFS_LOG("  [AUTH] SSH agent authentication succeeded");
+        agent_auth_success = true;
+        break;
+      }
+      prev = identity;
+    }
+
+    if (agent_auth_success) {
+      return;
+    }
+
+    // All agent identities failed
+    libssh2_agent_disconnect(agent);
+    libssh2_agent_free(agent);
+
+    char *err_msg;
+    libssh2_session_last_error(session, &err_msg, nullptr, 0);
+    CleanupSession();
+
+    throw IOException(
+        "SSH authentication failed for %s@%s:%d\n"
+        "  → SSH agent authentication failed (tried all identities)\n"
+        "  libssh2 error: %s",
+        params.username.c_str(), params.hostname.c_str(), params.port,
+        err_msg ? err_msg : "Unknown error");
+  }
+
+  // Deprecated: Fall back to SSH agent if SSH_AUTH_SOCK is set (for backward
+  // compatibility) This behavior will be removed in a future version - use
+  // use_ssh_agent=true instead
   const char *ssh_auth_sock = getenv("SSH_AUTH_SOCK");
   if (ssh_auth_sock && strlen(ssh_auth_sock) > 0) {
     LIBSSH2_AGENT *agent = libssh2_agent_init(session);
@@ -229,64 +398,21 @@ void SSHClient::Authenticate() {
         libssh2_agent_disconnect(agent);
       }
       libssh2_agent_free(agent);
-      auth_details =
+      auth_details +=
           "  → SSH agent authentication failed (tried all identities)\n";
     }
   }
 
-  // Try public key authentication if key path is provided
-  if (!params.key_path.empty()) {
-    std::string public_key = params.key_path + ".pub";
-    rc = libssh2_userauth_publickey_fromfile(session, params.username.c_str(),
-                                             public_key.c_str(),
-                                             params.key_path.c_str(),
-                                             nullptr // No passphrase
-    );
-
-    if (rc == 0) {
-      return; // Success
-    }
-
-    // Build detailed error message
-    auth_details = "  → Public key authentication failed\n";
-    if (rc == LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED) {
-      auth_details += "    Key was rejected by server (invalid key or user)\n";
-    } else if (rc == LIBSSH2_ERROR_FILE) {
-      auth_details += "    Could not read key file\n";
-    }
-    auth_details +=
-        "    Key file: " + params.key_path +
-        "\n"
-        "    Check: file exists, has correct permissions (chmod 600), and "
-        "matches server's authorized_keys\n"
-        "    Try: ssh -i " +
-        params.key_path + " -p " + std::to_string(params.port) + " " +
-        params.username + "@" + params.hostname + "\n";
-  }
-
-  // Try password authentication if password is provided
-  if (!params.password.empty()) {
-    rc = libssh2_userauth_password(session, params.username.c_str(),
-                                   params.password.c_str());
-
-    if (rc == 0) {
-      return; // Success
-    }
-
-    auth_details += "  → Password authentication failed\n"
-                    "    Check username and password are correct\n";
-  }
-
-  // No auth methods available
-  if (params.key_path.empty() && params.password.empty() &&
+  // No auth methods available or all failed
+  if (params.key_path.empty() && params.password.empty() && !params.use_agent &&
       (!ssh_auth_sock || strlen(ssh_auth_sock) == 0)) {
     CleanupSession();
     throw IOException(
         "SSH authentication failed for %s@%s:%d\n"
         "  No authentication method available\n"
-        "  → Specify either 'password' or 'key_path' in connection parameters\n"
-        "  → Or ensure SSH agent is running (SSH_AUTH_SOCK environment "
-        "variable)",
+        "  → Specify 'password' for password authentication\n"
+        "  → Specify 'key_path' for public key authentication\n"
+        "  → Set 'use_agent=true' to use SSH agent (requires SSH_AUTH_SOCK)",
         params.username.c_str(), params.hostname.c_str(), params.port);
   }
 
@@ -388,7 +514,7 @@ void SSHClient::UploadChunk(const std::string &remote_path, const char *data,
 
   ScopedTimer total_timer("SFTP", append ? "Append data" : "Total upload");
 
-  // Lock mutex to serialize SFTP operations (libssh2 session is not
+  // Lock per-client mutex to serialize SFTP operations (libssh2 session is not
   // thread-safe)
   std::lock_guard<std::mutex> lock(upload_mutex);
 
@@ -579,24 +705,24 @@ SSHClient::GetFileStats(const std::string &remote_path) {
 
   auto stats_start = std::chrono::steady_clock::now();
 
-  // Initialize SFTP session
-  auto sftp_init_start = std::chrono::steady_clock::now();
-  SFTPSession sftp(session);
-  auto sftp_init_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                          std::chrono::steady_clock::now() - sftp_init_start)
-                          .count();
+  // Use pooled SFTP session instead of creating new one each time
+  LIBSSH2_SFTP *sftp = BorrowSFTPSession();
 
   // Get file stats
   auto stat_start = std::chrono::steady_clock::now();
   LIBSSH2_SFTP_ATTRIBUTES attrs;
-  int rc = libssh2_sftp_stat(sftp.Get(), remote_path.c_str(), &attrs);
+  int rc = libssh2_sftp_stat(sftp, remote_path.c_str(), &attrs);
   auto stat_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                      std::chrono::steady_clock::now() - stat_start)
                      .count();
 
   if (rc != 0) {
+    ReturnSFTPSession(sftp);
     throw IOException("Failed to get file stats for: %s", remote_path);
   }
+
+  // Return session to pool
+  ReturnSFTPSession(sftp);
 
   auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                       std::chrono::steady_clock::now() - stats_start)
@@ -604,8 +730,8 @@ SSHClient::GetFileStats(const std::string &remote_path) {
 
   if (IsDebugLoggingEnabled()) {
     std::cerr << "  [STAT] GetFileStats for " << remote_path
-              << " (init=" << sftp_init_ms << "ms, stat=" << stat_ms
-              << "ms, total=" << total_ms << "ms)" << std::endl;
+              << " (stat=" << stat_ms << "ms, total=" << total_ms << "ms)"
+              << std::endl;
   }
 
   return attrs;
@@ -617,10 +743,14 @@ size_t SSHClient::ReadBytes(const std::string &remote_path, char *buffer,
     throw IOException("Not connected to SSH server");
   }
 
-  // Fall back to SFTP reads for SFTP-only servers
-  if (!supports_commands) {
+  // Fall back to SFTP reads for SFTP-only servers or if dd has been disabled
+  if (!supports_commands || dd_disabled) {
     return ReadBytesSFTP(remote_path, buffer, offset, length);
   }
+
+  // Serialize dd command execution globally to avoid overwhelming Hetzner's SSH
+  // channel limits
+  std::lock_guard<std::mutex> dd_lock(g_dd_command_mutex);
 
   auto read_start = std::chrono::steady_clock::now();
 
@@ -643,7 +773,13 @@ size_t SSHClient::ReadBytes(const std::string &remote_path, char *buffer,
   auto channel_open_start = std::chrono::steady_clock::now();
   LIBSSH2_CHANNEL *channel = libssh2_channel_open_session(session);
   if (!channel) {
-    throw IOException("Failed to open SSH channel for read");
+    // Fall back to SFTP if SSH channel creation fails
+    // This happens on servers with strict channel limits (e.g., Hetzner Storage
+    // Boxes) Disable dd permanently to avoid repeatedly hitting the same limit
+    SSHFS_LOG(
+        "  [READ-DD] Failed to open SSH channel, disabling dd and using SFTP");
+    dd_disabled = true;
+    return ReadBytesSFTP(remote_path, buffer, offset, length);
   }
   auto channel_open_end = std::chrono::steady_clock::now();
   auto channel_open_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -655,7 +791,13 @@ size_t SSHClient::ReadBytes(const std::string &remote_path, char *buffer,
   int rc = libssh2_channel_exec(channel, command.c_str());
   if (rc != 0) {
     libssh2_channel_free(channel);
-    throw IOException("Failed to execute dd command for read");
+    // Fall back to SFTP if dd command execution fails
+    // This happens on servers where dd execution is blocked despite command
+    // support Disable dd permanently since it's likely to fail again
+    SSHFS_LOG("  [READ-DD] Failed to execute dd command, disabling dd and "
+              "using SFTP");
+    dd_disabled = true;
+    return ReadBytesSFTP(remote_path, buffer, offset, length);
   }
   auto exec_end = std::chrono::steady_clock::now();
   auto exec_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -773,16 +915,22 @@ void SSHClient::CleanupSFTPPool() {
 LIBSSH2_SFTP *SSHClient::BorrowSFTPSession() {
   std::unique_lock<std::mutex> lock(pool_mutex);
 
-  // Initialize pool on first use
+  SSHFS_LOG("  [POOL] BorrowSFTPSession called, pool has " << sftp_pool.size()
+                                                           << " sessions");
+
+  // Lazy pool initialization on first use
   if (!pool_initialized) {
     lock.unlock();
     InitializeSFTPPool();
     lock.lock();
   }
 
-  // Wait for an available session
+  // Wait for an available session from the pool
+  // This ensures serialized access to the single SFTP session
+  SSHFS_LOG("  [POOL] Waiting for available session from pool");
   pool_cv.wait(lock, [this]() { return !sftp_pool.empty(); });
 
+  SSHFS_LOG("  [POOL] Borrowing existing session from pool");
   LIBSSH2_SFTP *sftp = sftp_pool.front();
   sftp_pool.pop();
   return sftp;
@@ -818,7 +966,9 @@ void SSHClient::DetectCapabilities() {
     }
 
     // Try to execute a simple test command
-    int rc = libssh2_channel_exec(channel, ":"); // ':' is a no-op command in sh
+    // Use 'pwd' instead of ':' because restricted shells (like Hetzner Storage
+    // Box) may not support ':' but do support basic commands like pwd
+    int rc = libssh2_channel_exec(channel, "pwd");
     if (rc != 0) {
       libssh2_channel_free(channel);
       SSHFS_LOG("  [DETECT] Server does not support command execution "
@@ -866,6 +1016,7 @@ void SSHClient::DetectCapabilities() {
 void SSHClient::CreateDirectorySFTP(const std::string &remote_path) {
   // Recursively create directories using SFTP mkdir
   // Split path by '/' and create each directory level
+  // Note: Called from UploadChunk which already holds upload_mutex
 
   LIBSSH2_SFTP *sftp = BorrowSFTPSession();
 
@@ -985,22 +1136,45 @@ void SSHClient::TruncateFileSFTP(const std::string &remote_path,
 
 size_t SSHClient::ReadBytesSFTP(const std::string &remote_path, char *buffer,
                                 size_t offset, size_t length) {
+  if (!buffer) {
+    throw IOException("ReadBytesSFTP: buffer is null");
+  }
+  if (length == 0) {
+    return 0;
+  }
+
   auto read_start = std::chrono::steady_clock::now();
 
+  // Borrow SFTP session from pool (shared across file handles)
+  // This allows multiple file handles to share a small pool of sessions
+  SSHFS_LOG("  [READ-SFTP] Borrowing SFTP session from pool for " << remote_path
+                                                                  << "...");
   LIBSSH2_SFTP *sftp = BorrowSFTPSession();
+  SSHFS_LOG("  [READ-SFTP] Session borrowed, opening file...");
+
+  // Serialize SFTP operations - libssh2 SFTP sessions are NOT thread-safe
+  // Multiple threads cannot use the same session concurrently
+  std::lock_guard<std::mutex> lock(upload_mutex);
 
   try {
     // Open file for reading
     auto open_start = std::chrono::steady_clock::now();
+    SSHFS_LOG("  [READ-SFTP] Opening " << remote_path << " for read...");
     LIBSSH2_SFTP_HANDLE *handle =
         libssh2_sftp_open(sftp, remote_path.c_str(), LIBSSH2_FXF_READ, 0);
 
     if (!handle) {
-      ReturnSFTPSession(sftp);
       int sftp_error = libssh2_sftp_last_error(sftp);
-      throw IOException("Failed to open file for read: %s (SFTP error: %d)",
-                        remote_path, sftp_error);
+      char *err_msg = nullptr;
+      int session_error =
+          libssh2_session_last_error(session, &err_msg, nullptr, 0);
+      throw IOException("Failed to open file for read: %s\n"
+                        "  SFTP error: %d\n"
+                        "  Session error: %d (%s)",
+                        remote_path.c_str(), sftp_error, session_error,
+                        err_msg ? err_msg : "Unknown error");
     }
+    SSHFS_LOG("  [READ-SFTP] File opened successfully");
     auto open_end = std::chrono::steady_clock::now();
     auto open_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                        open_end - open_start)
@@ -1008,24 +1182,39 @@ size_t SSHClient::ReadBytesSFTP(const std::string &remote_path, char *buffer,
 
     // Seek to the offset
     auto seek_start = std::chrono::steady_clock::now();
+    SSHFS_LOG("  [READ-SFTP] Seeking to offset " << offset << "...");
     libssh2_sftp_seek64(handle, offset);
+    SSHFS_LOG("  [READ-SFTP] Seek complete, starting read of " << length
+                                                               << " bytes...");
     auto seek_end = std::chrono::steady_clock::now();
     auto seek_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                        seek_end - seek_start)
                        .count();
 
-    // Read data
+    // Read data in chunks to avoid timeouts on large reads
+    // libssh2_sftp_read() can timeout for very large requests
+    // Reading in 32KB chunks matches libssh2's natural packet size
     auto actual_read_start = std::chrono::steady_clock::now();
     size_t total_read = 0;
+    const size_t READ_CHUNK_SIZE = 32 * 1024; // 32KB chunks
+
     while (total_read < length) {
+      // Calculate how much to read in this iteration
+      size_t bytes_remaining = length - total_read;
+      size_t bytes_to_read = std::min(bytes_remaining, READ_CHUNK_SIZE);
+
+      SSHFS_LOG("  [READ-SFTP] Reading chunk: " << total_read << "/" << length
+                                                << " (" << bytes_to_read
+                                                << " bytes)...");
       ssize_t nread =
-          libssh2_sftp_read(handle, buffer + total_read, length - total_read);
+          libssh2_sftp_read(handle, buffer + total_read, bytes_to_read);
+      SSHFS_LOG("  [READ-SFTP] Chunk read returned: " << nread << " bytes");
 
       if (nread == LIBSSH2_ERROR_EAGAIN) {
+        SSHFS_LOG("  [READ-SFTP] Got EAGAIN, retrying...");
         continue; // Retry
       } else if (nread < 0) {
         libssh2_sftp_close(handle);
-        ReturnSFTPSession(sftp);
         throw IOException("Failed to read from SFTP file: %s (error: %zd)",
                           remote_path, nread);
       } else if (nread == 0) {
@@ -1040,10 +1229,10 @@ size_t SSHClient::ReadBytesSFTP(const std::string &remote_path, char *buffer,
                               actual_read_end - actual_read_start)
                               .count();
 
-    // Close handle
+    // Close handle and return session to pool
     auto close_start = std::chrono::steady_clock::now();
     libssh2_sftp_close(handle);
-    ReturnSFTPSession(sftp);
+    ReturnSFTPSession(sftp); // Return to pool for reuse
     auto close_end = std::chrono::steady_clock::now();
     auto close_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                         close_end - close_start)
@@ -1065,6 +1254,7 @@ size_t SSHClient::ReadBytesSFTP(const std::string &remote_path, char *buffer,
 
     return total_read;
   } catch (...) {
+    // Return session to pool on error - critical to avoid leaking sessions!
     ReturnSFTPSession(sftp);
     throw;
   }
