@@ -474,20 +474,41 @@ void SSHClient::CleanupSession() {
 
 std::string SSHClient::ExecuteCommand(const std::string &command) {
   if (!connected) {
-    throw IOException("Not connected to SSH server");
+    throw IOException(
+        "Not connected to SSH server\n"
+        "  → Connection may have been closed or timed out\n"
+        "  → Try reconnecting or check keepalive_interval setting\n"
+        "  → Check: ssh -p %d %s@%s",
+        params.port, params.username.c_str(), params.hostname.c_str());
   }
 
   // Open channel
   LIBSSH2_CHANNEL *channel = libssh2_channel_open_session(session);
   if (!channel) {
-    throw IOException("Failed to open SSH channel");
+    char *err_msg;
+    int err_code = libssh2_session_last_error(session, &err_msg, nullptr, 0);
+    throw IOException("Failed to open SSH channel for command execution\n"
+                      "  → Command: %s\n"
+                      "  → libssh2 error: %s (code: %d)\n"
+                      "  → Server may have reached maximum channel limit\n"
+                      "  → Try reducing concurrent operations",
+                      command.c_str(), err_msg, err_code);
   }
 
   // Execute command
   int rc = libssh2_channel_exec(channel, command.c_str());
   if (rc != 0) {
+    char *err_msg;
+    libssh2_session_last_error(session, &err_msg, nullptr, 0);
     libssh2_channel_free(channel);
-    throw IOException("Failed to execute command: %s", command);
+    throw IOException("Failed to execute SSH command\n"
+                      "  → Command: %s\n"
+                      "  → libssh2 error: %s (code: %d)\n"
+                      "  → Server may not support this command\n"
+                      "  → Try: ssh -p %d %s@%s \"%s\"",
+                      command.c_str(), err_msg, rc, params.port,
+                      params.username.c_str(), params.hostname.c_str(),
+                      command.c_str());
   }
 
   // Read output
@@ -649,7 +670,10 @@ void SSHClient::AppendChunk(const std::string &remote_path,
 
 void SSHClient::RemoveFile(const std::string &remote_path) {
   if (!connected) {
-    throw IOException("Not connected to SSH server");
+    throw IOException(
+        "Not connected to SSH server\n"
+        "  → Connection may have been closed or timed out\n"
+        "  → Try reconnecting or check keepalive_interval setting");
   }
 
   // Initialize SFTP session
@@ -660,7 +684,15 @@ void SSHClient::RemoveFile(const std::string &remote_path) {
       ExecuteCommand("rm " + remote_path);
       return;
     } catch (...) {
-      throw IOException("Failed to remove remote file: %s", remote_path);
+      char *err_msg;
+      int err_code = libssh2_session_last_error(session, &err_msg, nullptr, 0);
+      throw IOException("Failed to remove remote file: %s\n"
+                        "  → libssh2 error: %s (code: %d)\n"
+                        "  → File may not exist or you may lack permissions\n"
+                        "  → Try: ssh -p %d %s@%s 'ls -la %s'",
+                        remote_path.c_str(), err_msg, err_code, params.port,
+                        params.username.c_str(), params.hostname.c_str(),
+                        remote_path.c_str());
     }
   }
 
@@ -676,7 +708,10 @@ void SSHClient::RemoveFile(const std::string &remote_path) {
 void SSHClient::RenameFile(const std::string &source_path,
                            const std::string &target_path) {
   if (!connected) {
-    throw IOException("Not connected to SSH server");
+    throw IOException(
+        "Not connected to SSH server\n"
+        "  → Connection may have been closed or timed out\n"
+        "  → Try reconnecting or check keepalive_interval setting");
   }
 
   // Initialize SFTP session
@@ -687,8 +722,16 @@ void SSHClient::RenameFile(const std::string &source_path,
       ExecuteCommand("mv " + source_path + " " + target_path);
       return;
     } catch (...) {
-      throw IOException("Failed to rename remote file from %s to %s",
-                        source_path, target_path);
+      char *err_msg;
+      int err_code = libssh2_session_last_error(session, &err_msg, nullptr, 0);
+      throw IOException("Failed to rename remote file from %s to %s\n"
+                        "  → libssh2 error: %s (code: %d)\n"
+                        "  → Source file may not exist or lack permissions\n"
+                        "  → Try: ssh -p %d %s@%s 'mv %s %s'",
+                        source_path.c_str(), target_path.c_str(), err_msg,
+                        err_code, params.port, params.username.c_str(),
+                        params.hostname.c_str(), source_path.c_str(),
+                        target_path.c_str());
     }
   }
 
@@ -701,15 +744,22 @@ void SSHClient::RenameFile(const std::string &source_path,
   libssh2_sftp_shutdown(sftp);
 
   if (rc != 0) {
-    throw IOException("Failed to rename remote file from %s to %s", source_path,
-                      target_path);
+    unsigned long sftp_error = libssh2_sftp_last_error(sftp);
+    throw IOException("Failed to rename remote file from %s to %s\n"
+                      "  → SFTP error code: %lu\n"
+                      "  → Source may not exist or target may already exist\n"
+                      "  → Check file permissions and paths",
+                      source_path.c_str(), target_path.c_str(), sftp_error);
   }
 }
 
 LIBSSH2_SFTP_ATTRIBUTES
 SSHClient::GetFileStats(const std::string &remote_path) {
   if (!connected) {
-    throw IOException("Not connected to SSH server");
+    throw IOException(
+        "Not connected to SSH server\n"
+        "  → Connection may have been closed or timed out\n"
+        "  → Try reconnecting or check keepalive_interval setting");
   }
 
   auto stats_start = std::chrono::steady_clock::now();
@@ -726,8 +776,15 @@ SSHClient::GetFileStats(const std::string &remote_path) {
                      .count();
 
   if (rc != 0) {
+    unsigned long sftp_error = libssh2_sftp_last_error(sftp);
     ReturnSFTPSession(sftp);
-    throw IOException("Failed to get file stats for: %s", remote_path);
+    throw IOException("Failed to get file stats for: %s\n"
+                      "  → SFTP error code: %lu\n"
+                      "  → File may not exist or you may lack permissions\n"
+                      "  → Try: ssh -p %d %s@%s 'ls -la %s'",
+                      remote_path.c_str(), sftp_error, params.port,
+                      params.username.c_str(), params.hostname.c_str(),
+                      remote_path.c_str());
   }
 
   // Return session to pool

@@ -200,9 +200,11 @@ int64_t SSHFSFileHandle::Read(void *buffer, int64_t nr_bytes) {
       if (!handle) {
         int sftp_error = libssh2_sftp_last_error(sftp);
         ssh_client->ReturnSFTPSession(sftp);
-        throw IOException(
-            "Failed to open remote file for reading: %s (SFTP error: %d)",
-            path.c_str(), sftp_error);
+        throw IOException("Failed to open remote file for reading: %s\n"
+                          "  → SFTP error code: %d\n"
+                          "  → File may not exist, check path and permissions\n"
+                          "  → Verify file exists on server before reading",
+                          path.c_str(), sftp_error);
       }
       auto file_open_ms =
           std::chrono::duration_cast<std::chrono::milliseconds>(
