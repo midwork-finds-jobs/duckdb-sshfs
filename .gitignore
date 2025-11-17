@@ -38,3 +38,6 @@ Thumbs.db
 
 # Uploaded test files (on remote server)
 test_data_*.csv
+
+# devenv vcpkg binary cache
+.vcpkg-cache/
