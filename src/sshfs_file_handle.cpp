@@ -462,8 +462,18 @@ void SSHFSFileHandle::UploadChunkAsync(
 }
 
 LIBSSH2_SFTP_ATTRIBUTES SSHFSFileHandle::GetCachedFileStats() {
-  // No caching - always fetch fresh stats per user request
-  return ssh_client->GetFileStats(path);
+  // Cache file stats to avoid repeated SFTP sessions
+  // Stats are cached for the lifetime of this file handle
+  if (!stats_cached) {
+    cached_file_stats = ssh_client->GetFileStats(path);
+    stats_cached = true;
+
+    if (IsDebugLoggingEnabled()) {
+      std::cerr << "  [CACHE] First GetFileStats - caching for file lifetime"
+                << std::endl;
+    }
+  }
+  return cached_file_stats;
 }
 
 idx_t SSHFSFileHandle::GetProgress() {
