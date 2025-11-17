@@ -60,7 +60,7 @@
     curl
     zip
     unzip
-    tar
+    gnutar
 
     # Python for vcpkg
     python3
@@ -262,98 +262,20 @@
   };
 
   # https://devenv.sh/outputs/
-  # Define build outputs that can be built with `devenv build`
-  outputs = {
-    # Release build of duckdb with sshfs extension
-    duckdb-release = {
-      description = "DuckDB with SSHFS extension (release build)";
-      builder = pkgs.writeShellScript "build-duckdb-release" ''
-        set -e
-
-        # Ensure we're in the source directory
-        cd ${config.env.DEVENV_ROOT}
-
-        # Initialize vcpkg if needed
-        if [ ! -f "vcpkg/bootstrap-vcpkg.sh" ]; then
-          echo "Initializing vcpkg submodule..."
-          git submodule update --init --recursive
-        fi
-
-        # Clean any previous builds
-        rm -rf build/release
-
-        # Build with ninja and vcpkg
-        export GEN=ninja
-        export VCPKG_TOOLCHAIN_PATH=$(pwd)/vcpkg/scripts/buildsystems/vcpkg.cmake
-        make release VCPKG_TOOLCHAIN_PATH=$VCPKG_TOOLCHAIN_PATH
-
-        # Copy binary to output
-        mkdir -p $out/bin
-        cp build/release/duckdb $out/bin/
-        cp -r build/release/repository $out/
-
-        echo "DuckDB SSHFS extension (release) built successfully"
-      '';
-    };
-
-    # Debug build of duckdb with sshfs extension
-    duckdb-debug = {
-      description = "DuckDB with SSHFS extension (debug build)";
-      builder = pkgs.writeShellScript "build-duckdb-debug" ''
-        set -e
-
-        # Ensure we're in the source directory
-        cd ${config.env.DEVENV_ROOT}
-
-        # Initialize vcpkg if needed
-        if [ ! -f "vcpkg/bootstrap-vcpkg.sh" ]; then
-          echo "Initializing vcpkg submodule..."
-          git submodule update --init --recursive
-        fi
-
-        # Clean any previous builds
-        rm -rf build/debug
-
-        # Build with ninja and vcpkg
-        export GEN=ninja
-        export VCPKG_TOOLCHAIN_PATH=$(pwd)/vcpkg/scripts/buildsystems/vcpkg.cmake
-        make debug VCPKG_TOOLCHAIN_PATH=$VCPKG_TOOLCHAIN_PATH
-
-        # Copy binary to output
-        mkdir -p $out/bin
-        cp build/debug/duckdb $out/bin/
-        cp -r build/debug/repository $out/
-
-        echo "DuckDB SSHFS extension (debug) built successfully"
-      '';
-    };
-
-    # Just the sshfs extension (loadable module)
-    sshfs-extension = {
-      description = "SSHFS extension for DuckDB (loadable module)";
-      builder = pkgs.writeShellScript "build-sshfs-extension" ''
-        set -e
-
-        # Ensure we're in the source directory
-        cd ${config.env.DEVENV_ROOT}
-
-        # Initialize vcpkg if needed
-        if [ ! -f "vcpkg/bootstrap-vcpkg.sh" ]; then
-          echo "Initializing vcpkg submodule..."
-          git submodule update --init --recursive
-        fi
-
-        # Build release version
-        export GEN=ninja
-        export VCPKG_TOOLCHAIN_PATH=$(pwd)/vcpkg/scripts/buildsystems/vcpkg.cmake
-        make release VCPKG_TOOLCHAIN_PATH=$VCPKG_TOOLCHAIN_PATH
-
-        # Copy extension to output
-        mkdir -p $out/lib/duckdb/extensions
-        cp build/release/extension/sshfs/sshfs.duckdb_extension $out/lib/duckdb/extensions/
-
-        echo "SSHFS extension built successfully"
-      '';
-    };
-  };
+  #
+  # Note: This project uses git submodules (vcpkg, extension-ci-tools) which are
+  # incompatible with Nix's source filtering (Nix excludes .git files that submodules
+  # rely on). Therefore, `devenv build` won't work for this project.
+  #
+  # BUILD INSTRUCTIONS:
+  #
+  # 1. Initialize submodules (one time):
+  #      git submodule update --init --recursive
+  #
+  # 2. Build using devenv shell scripts:
+  #      devenv shell build-release   # For release build
+  #      devenv shell build-debug     # For debug build
+  #
+  # The devenv environment provides all necessary dependencies (cmake, ninja, vcpkg,
+  # ccache, etc.) and the shell scripts handle the build process correctly.
 }

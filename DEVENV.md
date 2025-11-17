@@ -62,34 +62,27 @@ test-ssh
 integration-test
 ```
 
-## Using devenv Outputs
+## Why `devenv build` Doesn't Work
 
-devenv provides reproducible build outputs that can be built independently:
+This project uses git submodules (vcpkg, extension-ci-tools) which are incompatible with Nix's source filtering. Nix excludes `.git` files that git submodules rely on, so `devenv build` (which creates pure Nix derivations) cannot work with this project structure.
 
-```bash
-# Build all outputs
-devenv build
+**The correct way to build is using the devenv shell scripts** (see "Building the Extension" section above).
 
-# Build specific output
-devenv build outputs.duckdb-release
-devenv build outputs.duckdb-debug
-devenv build outputs.sshfs-extension
-```
+## Build Artifacts
 
-The built artifacts will be placed in the Nix store and symlinked to `./result`.
+After running `build-release` or `build-debug`, the following artifacts are created:
 
-## Available Outputs
+1. **DuckDB binary** - Full DuckDB with SSHFS extension built-in
+   - Release: `build/release/duckdb`
+   - Debug: `build/debug/duckdb`
 
-1. **duckdb-release** - Full DuckDB binary with SSHFS extension (release build)
-   - Binary: `result/bin/duckdb`
-   - Extension repository: `result/repository/`
+2. **SSHFS extension** - Loadable extension module
+   - Release: `build/release/extension/sshfs/sshfs.duckdb_extension`
+   - Debug: `build/debug/extension/sshfs/sshfs.duckdb_extension`
 
-2. **duckdb-debug** - Full DuckDB binary with SSHFS extension (debug build)
-   - Binary: `result/bin/duckdb`
-   - Extension repository: `result/repository/`
-
-3. **sshfs-extension** - Just the SSHFS extension loadable module
-   - Extension: `result/lib/duckdb/extensions/sshfs.duckdb_extension`
+3. **Extension repository** - Local extension registry
+   - Release: `build/release/repository/`
+   - Debug: `build/debug/repository/`
 
 ## Automatic Environment with direnv
 
