@@ -35,7 +35,9 @@ void CreateSSHSecretFunctions::Register(ExtensionLoader &loader) {
   ssh_config_fun.provider = "config";
   ssh_config_fun.function = CreateSSHSecretFromConfig;
 
-  // Define parameters
+  // Define parameters (authentication and connection only)
+  // Performance tuning should be done via SET statements (e.g., SET
+  // ssh_keepalive=60)
   ssh_config_fun.named_parameters["username"] = LogicalType::VARCHAR;
   ssh_config_fun.named_parameters["password"] = LogicalType::VARCHAR;
   ssh_config_fun.named_parameters["key_path"] = LogicalType::VARCHAR;
@@ -43,16 +45,6 @@ void CreateSSHSecretFunctions::Register(ExtensionLoader &loader) {
   ssh_config_fun.named_parameters["port"] = LogicalType::INTEGER;
   ssh_config_fun.named_parameters["host"] = LogicalType::VARCHAR;
   ssh_config_fun.named_parameters["hostname"] = LogicalType::VARCHAR;
-
-  // Performance tuning parameters
-  ssh_config_fun.named_parameters["timeout_seconds"] = LogicalType::INTEGER;
-  ssh_config_fun.named_parameters["max_retries"] = LogicalType::INTEGER;
-  ssh_config_fun.named_parameters["initial_retry_delay_ms"] =
-      LogicalType::INTEGER;
-  ssh_config_fun.named_parameters["keepalive_interval"] = LogicalType::INTEGER;
-  ssh_config_fun.named_parameters["chunk_size"] = LogicalType::UBIGINT;
-  ssh_config_fun.named_parameters["max_concurrent_uploads"] =
-      LogicalType::UBIGINT;
 
   // Register the function with the secret manager
   auto &db = loader.GetDatabaseInstance();

@@ -48,6 +48,12 @@ static void LoadInternal(ExtensionLoader &loader) {
       "may improve speed but use more connections)",
       LogicalType::BIGINT, Value::BIGINT(2));
 
+  config.AddExtensionOption(
+      "ssh_keepalive",
+      "SSH keepalive interval in seconds (default: 60, set to 0 to disable). "
+      "Prevents idle connection timeouts and improves performance.",
+      LogicalType::BIGINT, Value::BIGINT(60));
+
   auto &fs = db.GetFileSystem();
   fs.RegisterSubSystem(make_uniq<SSHFSFileSystem>());
 

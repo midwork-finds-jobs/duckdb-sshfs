@@ -427,25 +427,9 @@ SSHConnectionParams SSHFSFileSystem::ParseURL(const string &path,
               if (secret->TryGetValue("port", value)) {
                 params.port = value.GetValue<int>();
               }
-              // Performance tuning parameters
-              if (secret->TryGetValue("timeout_seconds", value)) {
-                params.timeout_seconds = value.GetValue<int>();
-              }
-              if (secret->TryGetValue("max_retries", value)) {
-                params.max_retries = value.GetValue<int>();
-              }
-              if (secret->TryGetValue("initial_retry_delay_ms", value)) {
-                params.initial_retry_delay_ms = value.GetValue<int>();
-              }
-              if (secret->TryGetValue("keepalive_interval", value)) {
-                params.keepalive_interval = value.GetValue<int>();
-              }
-              if (secret->TryGetValue("chunk_size", value)) {
-                params.chunk_size = value.GetValue<uint64_t>();
-              }
-              if (secret->TryGetValue("max_concurrent_uploads", value)) {
-                params.max_concurrent_uploads = value.GetValue<uint64_t>();
-              }
+              // Note: Performance tuning parameters (timeout, retries,
+              // chunk_size, etc.) are configured via SET statements, not
+              // secrets
             }
           }
         }
@@ -454,9 +438,8 @@ SSHConnectionParams SSHFSFileSystem::ParseURL(const string &path,
       // If secret lookup fails, continue with URL parameters
     }
 
-    // Read settings (these override defaults but secrets take precedence)
-    // Settings are read after secrets so they can provide defaults when
-    // secrets don't specify values
+    // Read performance tuning settings (via SET statements)
+    // These are global or session-level settings, not tied to specific secrets
     Value value;
 
     if (FileOpener::TryGetCurrentSetting(opener, "sshfs_debug_logging",
@@ -486,8 +469,7 @@ SSHConnectionParams SSHFSFileSystem::ParseURL(const string &path,
       }
     }
 
-    if (FileOpener::TryGetCurrentSetting(opener, "sshfs_keepalive_interval",
-                                         value)) {
+    if (FileOpener::TryGetCurrentSetting(opener, "ssh_keepalive", value)) {
       if (params.keepalive_interval == 60) { // default value
         params.keepalive_interval = static_cast<int>(value.GetValue<int64_t>());
       }
