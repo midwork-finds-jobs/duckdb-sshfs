@@ -1,7 +1,10 @@
 {
 	"dependencies": [
 		"openssl",
-		"libssh2"
+		{
+			"name": "libssh2",
+			"features": ["openssl", "zlib"]
+		}
 	],
 	"vcpkg-configuration": {
 		"overlay-ports": [
