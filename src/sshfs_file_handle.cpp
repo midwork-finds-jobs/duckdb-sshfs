@@ -208,8 +208,8 @@ int64_t SSHFSFileHandle::Read(void *buffer, int64_t nr_bytes) {
   // Seek to position
   libssh2_sftp_seek64(handle, file_position);
 
-  // Read in chunks (64KB chunks)
-  const size_t CHUNK_SIZE = 65536;
+  // Read in chunks (256KB chunks for better network throughput)
+  const size_t CHUNK_SIZE = 262144;
   size_t total_read = 0;
   char *buf = static_cast<char *>(buffer);
 
