@@ -1,0 +1,34 @@
+name: Check DuckDB Version
+on:
+  schedule:
+    - cron: '0 9 * * MON'
+  workflow_dispatch:
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get versions
+        id: versions
+        run: |
+          CURRENT=$(grep -oP 'duckdb_version: \Kv[\d.]+' .github/workflows/MainDistributionPipeline.yml | head -1)
+          LATEST=$(gh release list --repo duckdb/duckdb --limit 1 --json tagName -q '.[0].tagName')
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Create issue if outdated
+        if: steps.versions.outputs.current != steps.versions.outputs.latest
+        run: |
+          EXISTING=$(gh issue list --label dependencies --json title -q '.[].title' | grep -c "Update DuckDB" || true)
+          if [ "$EXISTING" = "0" ]; then
+            gh issue create \
+              --title "Update DuckDB to ${{ steps.versions.outputs.latest }}" \
+              --body "Current: ${{ steps.versions.outputs.current }}\nLatest: ${{ steps.versions.outputs.latest }}" \
+              --label "dependencies"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
