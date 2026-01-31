@@ -21,16 +21,6 @@ jobs:
       ci_tools_version: v1.4.4
       extension_name: sshfs
 
-  duckdb-next-build:
-    name: Build against DuckDB main (early warning)
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
-    with:
-      duckdb_version: main
-      ci_tools_version: main
-      extension_name: sshfs
-      exclude_archs: "windows_amd64_mingw;windows_amd64"
-    continue-on-error: true
-
   code-quality-check:
     name: Code Quality Check
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.4.4
