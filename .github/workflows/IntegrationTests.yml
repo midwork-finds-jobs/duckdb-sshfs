@@ -46,7 +46,7 @@ jobs:
           save: ${{ github.ref == 'refs/heads/main' || github.repository != 'duckdb/duckdb-sshfs' }}
 
       - name: Setup vcpkg
-        uses: lukka/run-vcpkg@abed23940f9d7bc267b0e1a21ee7b699a3794baa #v11.1
+        uses: lukka/run-vcpkg@5e0cab206a5ea620130caf672fce3e4a6b5666a1 #v11.5
         with:
           vcpkgGitCommitId: 5e5d0e1cd7785623065e77eff011afdeec1a3574
 
