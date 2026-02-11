@@ -26,7 +26,9 @@ static std::mutex g_dd_command_mutex;
 SSHClient::SSHClient(const SSHConnectionParams &params) : params(params) {
   // Set thread-local debug flag from params
   g_sshfs_debug_enabled = params.debug_logging;
-  // Initialize libssh2
+  // Initialize libssh2 with full crypto support.
+  // libssh2_init(0) is safe to call multiple times — it uses a refcount
+  // internally and only initializes OpenSSL once.
   int rc = libssh2_init(0);
   if (rc != 0) {
     throw IOException("Failed to initialize libssh2");
@@ -192,24 +194,51 @@ void SSHClient::InitializeSession() {
               << params.keepalive_interval << " seconds");
   }
 
-  // Set preferred KEX algorithms
-  // Start with widely-supported older algorithms that libssh2 definitely
-  // supports Then include modern ones if available
-  const char *kex_algorithms = "diffie-hellman-group14-sha256,"
-                               "diffie-hellman-group14-sha1,"
-                               "diffie-hellman-group-exchange-sha256,"
-                               "diffie-hellman-group-exchange-sha1,"
-                               "diffie-hellman-group1-sha1,"
-                               "curve25519-sha256,curve25519-sha256@libssh.org,"
-                               "diffie-hellman-group16-sha512,"
-                               "diffie-hellman-group18-sha512";
-  int kex_rc =
-      libssh2_session_method_pref(session, LIBSSH2_METHOD_KEX, kex_algorithms);
-  if (kex_rc != 0) {
-    SSHFS_LOG("  [KEX] Warning: Could not set KEX algorithm preferences (rc="
-              << kex_rc << ")");
-  } else {
-    SSHFS_LOG("  [KEX] Set KEX algorithm preferences: " << kex_algorithms);
+  // Set preferred KEX algorithms — include ECDH + curve25519 for modern servers.
+  // See: https://github.com/midwork-finds-jobs/duckdb-sshfs/issues/7
+  libssh2_session_method_pref(session, LIBSSH2_METHOD_KEX,
+    "curve25519-sha256,curve25519-sha256@libssh.org,"
+    "ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,"
+    "diffie-hellman-group14-sha256,"
+    "diffie-hellman-group16-sha512,"
+    "diffie-hellman-group18-sha512,"
+    "diffie-hellman-group14-sha1");
+
+  // Set preferred host key algorithms
+  libssh2_session_method_pref(session, LIBSSH2_METHOD_HOSTKEY,
+    "ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,"
+    "rsa-sha2-256,rsa-sha2-512,ssh-rsa");
+
+  if (IsDebugLoggingEnabled()) {
+    // Enable libssh2 trace for protocol-level debugging
+    libssh2_trace(session, ~0);
+    libssh2_trace_sethandler(session, nullptr,
+      [](LIBSSH2_SESSION *, void *, const char *data, size_t len) {
+        fprintf(stderr, "  [SSH2] %.*s\n", (int)len, data);
+      });
+  }
+
+  // Wait for SSH server banner before starting handshake.
+  // After TCP connect(), the SSH server sends its version banner (e.g.
+  // "SSH-2.0-OpenSSH_8.4p1"). libssh2_session_handshake() can fail with
+  // KEX error -8 if the banner hasn't arrived yet — this happens when the
+  // extension runs inside DuckDB's execution engine where socket timing
+  // differs from standalone programs. Using select() to wait for readable
+  // data ensures the banner is available before the handshake begins.
+  {
+    fd_set fds;
+    struct timeval tv;
+    FD_ZERO(&fds);
+    FD_SET(sock, &fds);
+    tv.tv_sec = params.timeout_seconds;
+    tv.tv_usec = 0;
+    int sel = select(sock + 1, &fds, NULL, NULL, &tv);
+    if (sel <= 0) {
+      CleanupSession();
+      throw IOException("SSH server at %s:%d did not send banner within %d seconds",
+                        params.hostname.c_str(), params.port, params.timeout_seconds);
+    }
+    SSHFS_LOG("  [HANDSHAKE] Server banner ready, proceeding with handshake");
   }
 
   // Perform SSH handshake
