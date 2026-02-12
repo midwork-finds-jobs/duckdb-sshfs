@@ -2,6 +2,8 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_opener.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/logging/file_system_logger.hpp"
+#include "duckdb/logging/log_manager.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 #include "ssh_config.hpp"
 #include "ssh_helpers.hpp"
@@ -27,8 +29,14 @@ SSHFSFileSystem::OpenFile(const string &path, FileOpenFlags flags,
     client->Connect();
   }
 
-  // Create and return file handle
-  return make_uniq<SSHFSFileHandle>(*this, path, flags, client, params);
+  // Create file handle and attach DuckDB logger for file system logging
+  auto file_handle =
+      make_uniq<SSHFSFileHandle>(*this, path, flags, client, params);
+  if (opener) {
+    file_handle->TryAddLogger(*opener);
+    DUCKDB_LOG_FILE_SYSTEM_OPEN((*file_handle));
+  }
+  return file_handle;
 }
 
 void SSHFSFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes,
@@ -94,28 +102,30 @@ void SSHFSFileSystem::FileSync(FileHandle &handle) {
 
 bool SSHFSFileSystem::FileExists(const string &filename,
                                  optional_ptr<FileOpener> opener) {
+  shared_ptr<Logger> log;
   try {
     auto params = ParseURL(filename, opener.get());
-    SSHFS_LOG("  [EXISTS] Checking if file exists: " << filename);
-    SSHFS_LOG("  [EXISTS] Remote path: " << params.remote_path);
+    log = params.logger;
+    SSHFS_LOG(log, "  [EXISTS] Checking if file exists: " << filename);
+    SSHFS_LOG(log, "  [EXISTS] Remote path: " << params.remote_path);
 
     auto client = GetOrCreateClient(filename, opener.get());
 
     if (!client->IsConnected()) {
-      SSHFS_LOG("  [EXISTS] Client not connected, connecting...");
+      SSHFS_LOG(log, "  [EXISTS] Client not connected, connecting...");
       client->Connect();
     }
 
     // Use SFTP to check if file exists by getting stats
-    SSHFS_LOG("  [EXISTS] Calling GetFileStats for: " << params.remote_path);
+    SSHFS_LOG(log,
+              "  [EXISTS] Calling GetFileStats for: " << params.remote_path);
     client->GetFileStats(params.remote_path);
-    SSHFS_LOG("  [EXISTS] File exists!");
+    SSHFS_LOG(log, "  [EXISTS] File exists!");
     return true;
   } catch (const std::exception &e) {
-    SSHFS_LOG("  [EXISTS] Exception: " << e.what());
+    SSHFS_LOG(log, "  [EXISTS] Exception: " << e.what());
     return false;
   } catch (...) {
-    SSHFS_LOG("  [EXISTS] Unknown exception");
     return false;
   }
 }
@@ -431,14 +441,24 @@ SSHConnectionParams SSHFSFileSystem::ParseURL(const string &path,
       // If secret lookup fails, continue with URL parameters
     }
 
+    // Get DuckDB logger from opener context for SSHFS-specific logging
+    try {
+      auto context = FileOpener::TryGetClientContext(opener);
+      if (context) {
+        params.logger = context->logger;
+      } else {
+        auto database = FileOpener::TryGetDatabase(opener);
+        if (database) {
+          params.logger = database->GetLogManager().GlobalLoggerReference();
+        }
+      }
+    } catch (...) {
+      // Ignore — logging will be a no-op without a logger
+    }
+
     // Read performance tuning settings (via SET statements)
     // These are global or session-level settings, not tied to specific secrets
     Value value;
-
-    if (FileOpener::TryGetCurrentSetting(opener, "sshfs_debug_logging",
-                                         value)) {
-      params.debug_logging = value.GetValue<bool>();
-    }
 
     if (FileOpener::TryGetCurrentSetting(opener, "sshfs_timeout_seconds",
                                          value)) {

@@ -16,17 +16,12 @@
 
 namespace duckdb {
 
-// Thread-local debug flag
-thread_local bool g_sshfs_debug_enabled = false;
-
 // Global mutex to serialize dd command execution (SSH channels)
 // Hetzner Storage Boxes limit concurrent SSH channels
 // Serialize all dd reads to avoid overwhelming the server
 static std::mutex g_dd_command_mutex;
 
 SSHClient::SSHClient(const SSHConnectionParams &params) : params(params) {
-  // Set thread-local debug flag from params
-  g_sshfs_debug_enabled = params.debug_logging;
   // Initialize libssh2 (refcounted internally, safe to call multiple times)
   int rc = libssh2_init(0);
   if (rc != 0) {
@@ -45,7 +40,8 @@ void SSHClient::Connect() {
   // queries
   if (params.hostname.find("storagebox.de") != std::string::npos ||
       params.hostname.find("your-storagebox.de") != std::string::npos) {
-    SSHFS_LOG("  [DETECT] Detected Hetzner Storage Box - disabling dd reads");
+    SSHFS_LOG(params.logger,
+              "  [DETECT] Detected Hetzner Storage Box - disabling dd reads");
     dd_disabled = true;
   }
 
@@ -60,9 +56,10 @@ void SSHClient::Connect() {
   while (attempt <= params.max_retries) {
     try {
       if (attempt > 0) {
-        SSHFS_LOG("  [RETRY] Attempt " << attempt << "/" << params.max_retries
-                                       << " after " << retry_delay_ms
-                                       << "ms delay...");
+        SSHFS_LOG(params.logger, "  [RETRY] Attempt "
+                                     << attempt << "/" << params.max_retries
+                                     << " after " << retry_delay_ms
+                                     << "ms delay...");
         std::this_thread::sleep_for(std::chrono::milliseconds(retry_delay_ms));
       }
 
@@ -131,7 +128,8 @@ void SSHClient::Connect() {
 
       connected = true;
       if (attempt > 0) {
-        SSHFS_LOG("  [RETRY] Connection successful on attempt " << attempt + 1);
+        SSHFS_LOG(params.logger,
+                  "  [RETRY] Connection successful on attempt " << attempt + 1);
       }
       return; // Success!
 
@@ -141,7 +139,8 @@ void SSHClient::Connect() {
       // Check if this is an authentication error (don't retry these)
       if (std::string(e.what()).find("authentication failed") !=
           std::string::npos) {
-        SSHFS_LOG("  [RETRY] Authentication failed - not retrying");
+        SSHFS_LOG(params.logger,
+                  "  [RETRY] Authentication failed - not retrying");
         throw; // Re-throw authentication errors immediately
       }
 
@@ -189,8 +188,8 @@ void SSHClient::InitializeSession() {
   // want_reply=0 means we don't wait for server response (faster)
   if (params.keepalive_interval > 0) {
     libssh2_keepalive_config(session, 0, params.keepalive_interval);
-    SSHFS_LOG("  [KEEPALIVE] Configured keepalive interval: "
-              << params.keepalive_interval << " seconds");
+    SSHFS_LOG(params.logger, "  [KEEPALIVE] Configured keepalive interval: "
+                                 << params.keepalive_interval << " seconds");
   }
 
   // Set preferred KEX algorithms — modern ECDH/curve25519 first, DH fallbacks.
@@ -218,10 +217,11 @@ void SSHClient::InitializeSession() {
   int kex_rc =
       libssh2_session_method_pref(session, LIBSSH2_METHOD_KEX, kex_algorithms);
   if (kex_rc != 0) {
-    SSHFS_LOG("  [KEX] Warning: Could not set KEX preferences (rc=" << kex_rc
+    SSHFS_LOG(params.logger,
+              "  [KEX] Warning: Could not set KEX preferences (rc=" << kex_rc
                                                                     << ")");
   } else {
-    SSHFS_LOG("  [KEX] Set KEX preferences: " << kex_algorithms);
+    SSHFS_LOG(params.logger, "  [KEX] Set KEX preferences: " << kex_algorithms);
   }
 
   // Set preferred host key algorithms
@@ -238,14 +238,17 @@ void SSHClient::InitializeSession() {
   int hk_rc = libssh2_session_method_pref(session, LIBSSH2_METHOD_HOSTKEY,
                                           hostkey_algorithms);
   if (hk_rc != 0) {
-    SSHFS_LOG("  [HOSTKEY] Warning: Could not set host key preferences (rc="
-              << hk_rc << ")");
+    SSHFS_LOG(params.logger,
+              "  [HOSTKEY] Warning: Could not set host key preferences (rc="
+                  << hk_rc << ")");
   } else {
-    SSHFS_LOG("  [HOSTKEY] Set host key preferences: " << hostkey_algorithms);
+    SSHFS_LOG(params.logger,
+              "  [HOSTKEY] Set host key preferences: " << hostkey_algorithms);
   }
 
   // Enable libssh2 protocol-level trace when debug logging is on
-  if (IsDebugLoggingEnabled()) {
+  if (params.logger &&
+      params.logger->ShouldLog(SSHFSLogType::NAME, SSHFSLogType::LEVEL)) {
     libssh2_trace(session, ~0);
     libssh2_trace_sethandler(
         session, nullptr,
@@ -275,20 +278,21 @@ void SSHClient::InitializeSession() {
           "SSH server at %s:%d did not send banner within %d seconds",
           params.hostname.c_str(), params.port, params.timeout_seconds);
     }
-    SSHFS_LOG("  [HANDSHAKE] Server banner ready, proceeding with handshake");
+    SSHFS_LOG(params.logger,
+              "  [HANDSHAKE] Server banner ready, proceeding with handshake");
   }
 
   // Perform SSH handshake
-  SSHFS_LOG("  [HANDSHAKE] Starting SSH handshake...");
+  SSHFS_LOG(params.logger, "  [HANDSHAKE] Starting SSH handshake...");
   int rc = libssh2_session_handshake(session, sock);
   if (rc != 0) {
     char *err_msg;
     int err_len;
     libssh2_session_last_error(session, &err_msg, &err_len, 0);
 
-    SSHFS_LOG("  [HANDSHAKE] Failed with error code: " << rc);
-    SSHFS_LOG(
-        "  [HANDSHAKE] Error message: " << (err_msg ? err_msg : "Unknown"));
+    SSHFS_LOG(params.logger, "  [HANDSHAKE] Failed with error code: " << rc);
+    SSHFS_LOG(params.logger, "  [HANDSHAKE] Error message: "
+                                 << (err_msg ? err_msg : "Unknown"));
 
     CleanupSession();
 
@@ -314,7 +318,7 @@ void SSHClient::InitializeSession() {
                       suggestion);
   }
 
-  SSHFS_LOG("  [HANDSHAKE] SSH handshake successful!");
+  SSHFS_LOG(params.logger, "  [HANDSHAKE] SSH handshake successful!");
 
   // Configure keepalive to detect dead connections (after handshake succeeds)
   libssh2_keepalive_config(session, 1, 60); // Send keepalive every 60s
@@ -331,7 +335,7 @@ void SSHClient::Authenticate() {
                                    params.password.c_str());
 
     if (rc == 0) {
-      SSHFS_LOG("  [AUTH] Password authentication succeeded");
+      SSHFS_LOG(params.logger, "  [AUTH] Password authentication succeeded");
       return; // Success
     }
 
@@ -363,7 +367,7 @@ void SSHClient::Authenticate() {
     );
 
     if (rc == 0) {
-      SSHFS_LOG("  [AUTH] Public key authentication succeeded");
+      SSHFS_LOG(params.logger, "  [AUTH] Public key authentication succeeded");
       return; // Success
     }
 
@@ -450,7 +454,7 @@ void SSHClient::Authenticate() {
         // Success! Clean up agent and return
         libssh2_agent_disconnect(agent);
         libssh2_agent_free(agent);
-        SSHFS_LOG("  [AUTH] SSH agent authentication succeeded");
+        SSHFS_LOG(params.logger, "  [AUTH] SSH agent authentication succeeded");
         agent_auth_success = true;
         break;
       }
@@ -496,7 +500,8 @@ void SSHClient::Authenticate() {
               // Success! Clean up agent and return
               libssh2_agent_disconnect(agent);
               libssh2_agent_free(agent);
-              SSHFS_LOG("  [AUTH] SSH agent authentication succeeded");
+              SSHFS_LOG(params.logger,
+                        "  [AUTH] SSH agent authentication succeeded");
               return;
             }
             prev = identity;
@@ -640,7 +645,8 @@ void SSHClient::UploadChunk(const std::string &remote_path, const char *data,
     throw IOException("Not connected to SSH server");
   }
 
-  ScopedTimer total_timer("SFTP", append ? "Append data" : "Total upload");
+  ScopedTimer total_timer(params.logger, "SFTP",
+                          append ? "Append data" : "Total upload");
 
   // Lock per-client mutex to serialize SFTP operations (libssh2 session is not
   // thread-safe)
@@ -651,7 +657,7 @@ void SSHClient::UploadChunk(const std::string &remote_path, const char *data,
 
   // Create parent directories if needed
   {
-    ScopedTimer mkdir_timer("SFTP", "Create dirs");
+    ScopedTimer mkdir_timer(params.logger, "SFTP", "Create dirs");
     size_t last_slash = remote_path.find_last_of('/');
     if (last_slash != std::string::npos) {
       std::string dir_path = remote_path.substr(0, last_slash);
@@ -687,7 +693,8 @@ void SSHClient::UploadChunk(const std::string &remote_path, const char *data,
   // Open remote file for writing
   LIBSSH2_SFTP_HANDLE *sftp_handle;
   {
-    ScopedTimer open_timer("SFTP", append ? "Open for append" : "Open file");
+    ScopedTimer open_timer(params.logger, "SFTP",
+                           append ? "Open for append" : "Open file");
 
     // Choose flags based on append mode
     unsigned long flags;
@@ -713,7 +720,7 @@ void SSHClient::UploadChunk(const std::string &remote_path, const char *data,
 
   // Write all data - let libssh2 handle internal buffering
   {
-    ThroughputTimer write_timer("SFTP", "Write", size);
+    ThroughputTimer write_timer(params.logger, "SFTP", "Write", size);
     size_t total_written = 0;
 
     // Write in a loop until all data is sent
@@ -745,7 +752,7 @@ void SSHClient::UploadChunk(const std::string &remote_path, const char *data,
 
   // Close file and return SFTP session to pool
   {
-    ScopedTimer close_timer("SFTP", "Close handle");
+    ScopedTimer close_timer(params.logger, "SFTP", "Close handle");
     libssh2_sftp_close(sftp_handle);
   }
 
@@ -865,11 +872,9 @@ SSHClient::GetFileStats(const std::string &remote_path) {
                       std::chrono::steady_clock::now() - stats_start)
                       .count();
 
-  if (IsDebugLoggingEnabled()) {
-    std::cerr << "  [STAT] GetFileStats for " << remote_path
-              << " (stat=" << stat_ms << "ms, total=" << total_ms << "ms)"
-              << std::endl;
-  }
+  SSHFS_LOG(params.logger, "  [STAT] GetFileStats for "
+                               << remote_path << " (stat=" << stat_ms
+                               << "ms, total=" << total_ms << "ms)");
 
   return attrs;
 }
@@ -914,6 +919,7 @@ size_t SSHClient::ReadBytes(const std::string &remote_path, char *buffer,
     // This happens on servers with strict channel limits (e.g., Hetzner Storage
     // Boxes) Disable dd permanently to avoid repeatedly hitting the same limit
     SSHFS_LOG(
+        params.logger,
         "  [READ-DD] Failed to open SSH channel, disabling dd and using SFTP");
     dd_disabled = true;
     return ReadBytesSFTP(remote_path, buffer, offset, length);
@@ -931,7 +937,8 @@ size_t SSHClient::ReadBytes(const std::string &remote_path, char *buffer,
     // Fall back to SFTP if dd command execution fails
     // This happens on servers where dd execution is blocked despite command
     // support Disable dd permanently since it's likely to fail again
-    SSHFS_LOG("  [READ-DD] Failed to execute dd command, disabling dd and "
+    SSHFS_LOG(params.logger,
+              "  [READ-DD] Failed to execute dd command, disabling dd and "
               "using SFTP");
     dd_disabled = true;
     return ReadBytesSFTP(remote_path, buffer, offset, length);
@@ -988,15 +995,17 @@ size_t SSHClient::ReadBytes(const std::string &remote_path, char *buffer,
                       read_end - read_start)
                       .count();
 
-  if (IsDebugLoggingEnabled()) {
+  {
     double mb_size = total_read / (1024.0 * 1024.0);
     double mb_per_sec = total_ms > 0 ? (mb_size / (total_ms / 1000.0)) : 0;
-    std::cerr << "  [READ-DD] offset=" << offset << " length=" << length
-              << " read=" << total_read << " bytes in " << total_ms << "ms ("
-              << mb_per_sec << " MB/s)" << std::endl;
-    std::cerr << "    [BREAKDOWN] channel_open=" << channel_open_ms
-              << "ms, exec=" << exec_ms << "ms, actual_read=" << actual_read_ms
-              << "ms, close=" << close_ms << "ms" << std::endl;
+    SSHFS_LOG(params.logger, "  [READ-DD] offset="
+                                 << offset << " length=" << length << " read="
+                                 << total_read << " bytes in " << total_ms
+                                 << "ms (" << mb_per_sec << " MB/s)");
+    SSHFS_LOG(params.logger, "    [BREAKDOWN] channel_open="
+                                 << channel_open_ms << "ms, exec=" << exec_ms
+                                 << "ms, actual_read=" << actual_read_ms
+                                 << "ms, close=" << close_ms << "ms");
   }
 
   return total_read;
@@ -1007,10 +1016,8 @@ void SSHClient::InitializeSFTPPool() {
     return;
   }
 
-  if (IsDebugLoggingEnabled()) {
-    std::cerr << "  [POOL] Initializing SFTP session pool with " << pool_size
-              << " sessions..." << std::endl;
-  }
+  SSHFS_LOG(params.logger, "  [POOL] Initializing SFTP session pool with "
+                               << pool_size << " sessions...");
 
   auto pool_start = std::chrono::steady_clock::now();
 
@@ -1031,10 +1038,9 @@ void SSHClient::InitializeSFTPPool() {
                      pool_end - pool_start)
                      .count();
 
-  if (IsDebugLoggingEnabled()) {
-    std::cerr << "  [POOL] Initialized " << pool_size << " SFTP sessions in "
-              << pool_ms << "ms" << std::endl;
-  }
+  SSHFS_LOG(params.logger, "  [POOL] Initialized "
+                               << pool_size << " SFTP sessions in " << pool_ms
+                               << "ms");
 }
 
 void SSHClient::CleanupSFTPPool() {
@@ -1052,8 +1058,8 @@ void SSHClient::CleanupSFTPPool() {
 LIBSSH2_SFTP *SSHClient::BorrowSFTPSession() {
   std::unique_lock<std::mutex> lock(pool_mutex);
 
-  SSHFS_LOG("  [POOL] BorrowSFTPSession called, pool has " << sftp_pool.size()
-                                                           << " sessions");
+  SSHFS_LOG(params.logger, "  [POOL] BorrowSFTPSession called, pool has "
+                               << sftp_pool.size() << " sessions");
 
   // Lazy pool initialization on first use
   if (!pool_initialized) {
@@ -1064,10 +1070,10 @@ LIBSSH2_SFTP *SSHClient::BorrowSFTPSession() {
 
   // Wait for an available session from the pool
   // This ensures serialized access to the single SFTP session
-  SSHFS_LOG("  [POOL] Waiting for available session from pool");
+  SSHFS_LOG(params.logger, "  [POOL] Waiting for available session from pool");
   pool_cv.wait(lock, [this]() { return !sftp_pool.empty(); });
 
-  SSHFS_LOG("  [POOL] Borrowing existing session from pool");
+  SSHFS_LOG(params.logger, "  [POOL] Borrowing existing session from pool");
   LIBSSH2_SFTP *sftp = sftp_pool.front();
   sftp_pool.pop();
   return sftp;
@@ -1096,7 +1102,8 @@ void SSHClient::DetectCapabilities() {
 
     if (!channel) {
       // Can't open channel = SFTP-only server
-      SSHFS_LOG("  [DETECT] Server does not support SSH command execution "
+      SSHFS_LOG(params.logger,
+                "  [DETECT] Server does not support SSH command execution "
                 "(SFTP-only mode)");
       supports_commands = false;
       return;
@@ -1108,7 +1115,8 @@ void SSHClient::DetectCapabilities() {
     int rc = libssh2_channel_exec(channel, "pwd");
     if (rc != 0) {
       libssh2_channel_free(channel);
-      SSHFS_LOG("  [DETECT] Server does not support command execution "
+      SSHFS_LOG(params.logger,
+                "  [DETECT] Server does not support command execution "
                 "(SFTP-only mode)");
       supports_commands = false;
       return;
@@ -1131,19 +1139,22 @@ void SSHClient::DetectCapabilities() {
 
     if (exit_status != 0) {
       // Command failed - likely SFTP-only server
-      SSHFS_LOG("  [DETECT] Command execution returned non-zero exit status ("
-                << exit_status << "), assuming SFTP-only mode");
+      SSHFS_LOG(params.logger,
+                "  [DETECT] Command execution returned non-zero exit status ("
+                    << exit_status << "), assuming SFTP-only mode");
       supports_commands = false;
       return;
     }
 
     // Success - server supports command execution
-    SSHFS_LOG("  [DETECT] Server supports SSH command execution");
+    SSHFS_LOG(params.logger,
+              "  [DETECT] Server supports SSH command execution");
     supports_commands = true;
 
   } catch (...) {
     // If anything goes wrong, assume SFTP-only
-    SSHFS_LOG("  [DETECT] Error testing commands, assuming SFTP-only mode");
+    SSHFS_LOG(params.logger,
+              "  [DETECT] Error testing commands, assuming SFTP-only mode");
     supports_commands = false;
   }
 }
@@ -1284,10 +1295,10 @@ size_t SSHClient::ReadBytesSFTP(const std::string &remote_path, char *buffer,
 
   // Borrow SFTP session from pool (shared across file handles)
   // This allows multiple file handles to share a small pool of sessions
-  SSHFS_LOG("  [READ-SFTP] Borrowing SFTP session from pool for " << remote_path
-                                                                  << "...");
+  SSHFS_LOG(params.logger, "  [READ-SFTP] Borrowing SFTP session from pool for "
+                               << remote_path << "...");
   LIBSSH2_SFTP *sftp = BorrowSFTPSession();
-  SSHFS_LOG("  [READ-SFTP] Session borrowed, opening file...");
+  SSHFS_LOG(params.logger, "  [READ-SFTP] Session borrowed, opening file...");
 
   // Serialize SFTP operations - libssh2 SFTP sessions are NOT thread-safe
   // Multiple threads cannot use the same session concurrently
@@ -1296,7 +1307,8 @@ size_t SSHClient::ReadBytesSFTP(const std::string &remote_path, char *buffer,
   try {
     // Open file for reading
     auto open_start = std::chrono::steady_clock::now();
-    SSHFS_LOG("  [READ-SFTP] Opening " << remote_path << " for read...");
+    SSHFS_LOG(params.logger,
+              "  [READ-SFTP] Opening " << remote_path << " for read...");
     LIBSSH2_SFTP_HANDLE *handle =
         libssh2_sftp_open(sftp, remote_path.c_str(), LIBSSH2_FXF_READ, 0);
 
@@ -1311,7 +1323,7 @@ size_t SSHClient::ReadBytesSFTP(const std::string &remote_path, char *buffer,
                         remote_path.c_str(), sftp_error, session_error,
                         err_msg ? err_msg : "Unknown error");
     }
-    SSHFS_LOG("  [READ-SFTP] File opened successfully");
+    SSHFS_LOG(params.logger, "  [READ-SFTP] File opened successfully");
     auto open_end = std::chrono::steady_clock::now();
     auto open_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                        open_end - open_start)
@@ -1319,10 +1331,11 @@ size_t SSHClient::ReadBytesSFTP(const std::string &remote_path, char *buffer,
 
     // Seek to the offset
     auto seek_start = std::chrono::steady_clock::now();
-    SSHFS_LOG("  [READ-SFTP] Seeking to offset " << offset << "...");
+    SSHFS_LOG(params.logger,
+              "  [READ-SFTP] Seeking to offset " << offset << "...");
     libssh2_sftp_seek64(handle, offset);
-    SSHFS_LOG("  [READ-SFTP] Seek complete, starting read of " << length
-                                                               << " bytes...");
+    SSHFS_LOG(params.logger, "  [READ-SFTP] Seek complete, starting read of "
+                                 << length << " bytes...");
     auto seek_end = std::chrono::steady_clock::now();
     auto seek_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                        seek_end - seek_start)
@@ -1340,15 +1353,16 @@ size_t SSHClient::ReadBytesSFTP(const std::string &remote_path, char *buffer,
       size_t bytes_remaining = length - total_read;
       size_t bytes_to_read = std::min(bytes_remaining, READ_CHUNK_SIZE);
 
-      SSHFS_LOG("  [READ-SFTP] Reading chunk: " << total_read << "/" << length
-                                                << " (" << bytes_to_read
-                                                << " bytes)...");
+      SSHFS_LOG(params.logger, "  [READ-SFTP] Reading chunk: "
+                                   << total_read << "/" << length << " ("
+                                   << bytes_to_read << " bytes)...");
       ssize_t nread =
           libssh2_sftp_read(handle, buffer + total_read, bytes_to_read);
-      SSHFS_LOG("  [READ-SFTP] Chunk read returned: " << nread << " bytes");
+      SSHFS_LOG(params.logger,
+                "  [READ-SFTP] Chunk read returned: " << nread << " bytes");
 
       if (nread == LIBSSH2_ERROR_EAGAIN) {
-        SSHFS_LOG("  [READ-SFTP] Got EAGAIN, retrying...");
+        SSHFS_LOG(params.logger, "  [READ-SFTP] Got EAGAIN, retrying...");
         continue; // Retry
       } else if (nread < 0) {
         libssh2_sftp_close(handle);
@@ -1380,12 +1394,14 @@ size_t SSHClient::ReadBytesSFTP(const std::string &remote_path, char *buffer,
                         read_end - read_start)
                         .count();
 
-    SSHFS_LOG("  [READ-SFTP] offset="
-              << offset << " length=" << length << " read=" << total_read
-              << " bytes in " << total_ms << "ms ("
-              << (total_read / 1024.0 / 1024.0) / (total_ms / 1000.0)
-              << " MB/s)");
-    SSHFS_LOG("    [BREAKDOWN] open=" << open_ms << "ms, seek=" << seek_ms
+    SSHFS_LOG(params.logger,
+              "  [READ-SFTP] offset="
+                  << offset << " length=" << length << " read=" << total_read
+                  << " bytes in " << total_ms << "ms ("
+                  << (total_read / 1024.0 / 1024.0) / (total_ms / 1000.0)
+                  << " MB/s)");
+    SSHFS_LOG(params.logger,
+              "    [BREAKDOWN] open=" << open_ms << "ms, seek=" << seek_ms
                                       << "ms, actual_read=" << actual_read_ms
                                       << "ms, close=" << close_ms << "ms");
 
