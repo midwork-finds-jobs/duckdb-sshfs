@@ -196,14 +196,25 @@ void SSHClient::InitializeSession() {
   // Set preferred KEX algorithms — modern ECDH/curve25519 first, DH fallbacks.
   // Removes insecure group1-sha1 and group-exchange-sha1.
   // See: https://github.com/midwork-finds-jobs/duckdb-sshfs/issues/7
-  const char *kex_algorithms =
-      "curve25519-sha256,curve25519-sha256@libssh.org,"
-      "ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,"
-      "diffie-hellman-group14-sha256,"
-      "diffie-hellman-group-exchange-sha256,"
-      "diffie-hellman-group16-sha512,"
-      "diffie-hellman-group18-sha512,"
-      "diffie-hellman-group14-sha1";
+  //
+  // When strict_crypto is enabled, only non-NIST algorithms are used:
+  // - Removes ecdh-sha2-nistp*, diffie-hellman-group14-sha1
+  const char *kex_algorithms;
+  if (params.strict_crypto) {
+    kex_algorithms = "curve25519-sha256,curve25519-sha256@libssh.org,"
+                     "diffie-hellman-group14-sha256,"
+                     "diffie-hellman-group-exchange-sha256,"
+                     "diffie-hellman-group16-sha512,"
+                     "diffie-hellman-group18-sha512";
+  } else {
+    kex_algorithms = "curve25519-sha256,curve25519-sha256@libssh.org,"
+                     "ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,"
+                     "diffie-hellman-group14-sha256,"
+                     "diffie-hellman-group-exchange-sha256,"
+                     "diffie-hellman-group16-sha512,"
+                     "diffie-hellman-group18-sha512,"
+                     "diffie-hellman-group14-sha1";
+  }
   int kex_rc =
       libssh2_session_method_pref(session, LIBSSH2_METHOD_KEX, kex_algorithms);
   if (kex_rc != 0) {
@@ -214,10 +225,16 @@ void SSHClient::InitializeSession() {
   }
 
   // Set preferred host key algorithms
-  const char *hostkey_algorithms =
-      "ssh-ed25519,"
-      "ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,"
-      "rsa-sha2-256,rsa-sha2-512,ssh-rsa";
+  // When strict_crypto is enabled, removes ecdsa-sha2-nistp* and ssh-rsa
+  const char *hostkey_algorithms;
+  if (params.strict_crypto) {
+    hostkey_algorithms = "ssh-ed25519,rsa-sha2-256,rsa-sha2-512";
+  } else {
+    hostkey_algorithms = "ssh-ed25519,"
+                         "ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,"
+                         "ecdsa-sha2-nistp521,"
+                         "rsa-sha2-256,rsa-sha2-512,ssh-rsa";
+  }
   int hk_rc = libssh2_session_method_pref(session, LIBSSH2_METHOD_HOSTKEY,
                                           hostkey_algorithms);
   if (hk_rc != 0) {

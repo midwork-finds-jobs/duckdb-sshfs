@@ -502,6 +502,11 @@ SSHConnectionParams SSHFSFileSystem::ParseURL(const string &path,
             static_cast<size_t>(value.GetValue<int64_t>());
       }
     }
+
+    if (FileOpener::TryGetCurrentSetting(opener, "sshfs_strict_crypto",
+                                         value)) {
+      params.strict_crypto = value.GetValue<bool>();
+    }
   }
 
   // Validate that we have required authentication info
