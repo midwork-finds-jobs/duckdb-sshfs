@@ -753,19 +753,6 @@ void SSHClient::UploadChunk(const std::string &remote_path, const char *data,
   ReturnSFTPSession(sftp);
 }
 
-void SSHClient::AppendChunk(const std::string &remote_path,
-                            const std::string &chunk_path) {
-  if (!connected) {
-    throw IOException("Not connected to SSH server");
-  }
-
-  // Use dd command to append chunk to final file
-  std::string command = "dd if=" + chunk_path + " of=" + remote_path +
-                        " oflag=append conv=notrunc 2>/dev/null";
-
-  ExecuteCommand(command);
-}
-
 void SSHClient::RemoveFile(const std::string &remote_path) {
   if (!connected) {
     throw IOException(
@@ -774,24 +761,17 @@ void SSHClient::RemoveFile(const std::string &remote_path) {
         "  → Try reconnecting or check keepalive_interval setting");
   }
 
-  // Initialize SFTP session
+  // Use SFTP exclusively (avoids command injection via remote_path)
   LIBSSH2_SFTP *sftp = libssh2_sftp_init(session);
   if (!sftp) {
-    // If SFTP fails, try using rm command
-    try {
-      ExecuteCommand("rm " + remote_path);
-      return;
-    } catch (...) {
-      char *err_msg;
-      int err_code = libssh2_session_last_error(session, &err_msg, nullptr, 0);
-      throw IOException("Failed to remove remote file: %s\n"
-                        "  → libssh2 error: %s (code: %d)\n"
-                        "  → File may not exist or you may lack permissions\n"
-                        "  → Try: ssh -p %d %s@%s 'ls -la %s'",
-                        remote_path.c_str(), err_msg, err_code, params.port,
-                        params.username.c_str(), params.hostname.c_str(),
-                        remote_path.c_str());
-    }
+    char *err_msg;
+    int err_code = libssh2_session_last_error(session, &err_msg, nullptr, 0);
+    throw IOException("Failed to initialize SFTP session for file removal: %s\n"
+                      "  → libssh2 error: %s (code: %d)\n"
+                      "  → Try: ssh -p %d %s@%s 'ls -la %s'",
+                      remote_path.c_str(), err_msg, err_code, params.port,
+                      params.username.c_str(), params.hostname.c_str(),
+                      remote_path.c_str());
   }
 
   // Remove file via SFTP
@@ -812,25 +792,18 @@ void SSHClient::RenameFile(const std::string &source_path,
         "  → Try reconnecting or check keepalive_interval setting");
   }
 
-  // Initialize SFTP session
+  // Use SFTP exclusively (avoids command injection via paths)
   LIBSSH2_SFTP *sftp = libssh2_sftp_init(session);
   if (!sftp) {
-    // If SFTP fails, try using mv command
-    try {
-      ExecuteCommand("mv " + source_path + " " + target_path);
-      return;
-    } catch (...) {
-      char *err_msg;
-      int err_code = libssh2_session_last_error(session, &err_msg, nullptr, 0);
-      throw IOException("Failed to rename remote file from %s to %s\n"
-                        "  → libssh2 error: %s (code: %d)\n"
-                        "  → Source file may not exist or lack permissions\n"
-                        "  → Try: ssh -p %d %s@%s 'mv %s %s'",
-                        source_path.c_str(), target_path.c_str(), err_msg,
-                        err_code, params.port, params.username.c_str(),
-                        params.hostname.c_str(), source_path.c_str(),
-                        target_path.c_str());
-    }
+    char *err_msg;
+    int err_code = libssh2_session_last_error(session, &err_msg, nullptr, 0);
+    throw IOException("Failed to initialize SFTP session for rename: %s → %s\n"
+                      "  → libssh2 error: %s (code: %d)\n"
+                      "  → Try: ssh -p %d %s@%s 'mv %s %s'",
+                      source_path.c_str(), target_path.c_str(), err_msg,
+                      err_code, params.port, params.username.c_str(),
+                      params.hostname.c_str(), source_path.c_str(),
+                      target_path.c_str());
   }
 
   // Rename file via SFTP
@@ -929,9 +902,9 @@ size_t SSHClient::ReadBytes(const std::string &remote_path, char *buffer,
   // - status=none: suppress dd's stderr output
 
   std::string command =
-      "dd if=" + remote_path + " bs=4096" + " iflag=skip_bytes,count_bytes" +
-      " skip=" + std::to_string(offset) + " count=" + std::to_string(length) +
-      " status=none 2>/dev/null";
+      "dd if=" + ShellQuote(remote_path) + " bs=4096" +
+      " iflag=skip_bytes,count_bytes" + " skip=" + std::to_string(offset) +
+      " count=" + std::to_string(length) + " status=none 2>/dev/null";
 
   // Open channel for command
   auto channel_open_start = std::chrono::steady_clock::now();

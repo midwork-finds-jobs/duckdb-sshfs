@@ -62,8 +62,6 @@ public:
   // File operations
   void UploadChunk(const std::string &remote_path, const char *data,
                    size_t size, bool append = false);
-  void AppendChunk(const std::string &remote_path,
-                   const std::string &chunk_path);
   void RemoveFile(const std::string &remote_path);
   void RenameFile(const std::string &source_path,
                   const std::string &target_path);
