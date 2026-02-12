@@ -241,8 +241,7 @@ This is useful if you want to avoid NIST curves (which have theoretical concerns
 SSHFS uses DuckDB's native logging system. Enable debug logs and query them via `duckdb_logs()`:
 
 ```sql
-SET enable_logging = true;
-SET logging_level = 'debug';
+CALL enable_logging(level := 'debug');
 LOAD sshfs;
 
 -- Perform operations...
