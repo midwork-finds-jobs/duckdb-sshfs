@@ -8,6 +8,7 @@
 #include <iostream>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sstream>
 #include <sys/socket.h>
 #include <thread>
@@ -26,7 +27,7 @@ static std::mutex g_dd_command_mutex;
 SSHClient::SSHClient(const SSHConnectionParams &params) : params(params) {
   // Set thread-local debug flag from params
   g_sshfs_debug_enabled = params.debug_logging;
-  // Initialize libssh2
+  // Initialize libssh2 (refcounted internally, safe to call multiple times)
   int rc = libssh2_init(0);
   if (rc != 0) {
     throw IOException("Failed to initialize libssh2");
@@ -192,24 +193,72 @@ void SSHClient::InitializeSession() {
               << params.keepalive_interval << " seconds");
   }
 
-  // Set preferred KEX algorithms
-  // Start with widely-supported older algorithms that libssh2 definitely
-  // supports Then include modern ones if available
-  const char *kex_algorithms = "diffie-hellman-group14-sha256,"
-                               "diffie-hellman-group14-sha1,"
-                               "diffie-hellman-group-exchange-sha256,"
-                               "diffie-hellman-group-exchange-sha1,"
-                               "diffie-hellman-group1-sha1,"
-                               "curve25519-sha256,curve25519-sha256@libssh.org,"
-                               "diffie-hellman-group16-sha512,"
-                               "diffie-hellman-group18-sha512";
+  // Set preferred KEX algorithms — modern ECDH/curve25519 first, DH fallbacks.
+  // Removes insecure group1-sha1 and group-exchange-sha1.
+  // See: https://github.com/midwork-finds-jobs/duckdb-sshfs/issues/7
+  const char *kex_algorithms =
+      "curve25519-sha256,curve25519-sha256@libssh.org,"
+      "ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,"
+      "diffie-hellman-group14-sha256,"
+      "diffie-hellman-group-exchange-sha256,"
+      "diffie-hellman-group16-sha512,"
+      "diffie-hellman-group18-sha512,"
+      "diffie-hellman-group14-sha1";
   int kex_rc =
       libssh2_session_method_pref(session, LIBSSH2_METHOD_KEX, kex_algorithms);
   if (kex_rc != 0) {
-    SSHFS_LOG("  [KEX] Warning: Could not set KEX algorithm preferences (rc="
-              << kex_rc << ")");
+    SSHFS_LOG("  [KEX] Warning: Could not set KEX preferences (rc=" << kex_rc
+                                                                    << ")");
   } else {
-    SSHFS_LOG("  [KEX] Set KEX algorithm preferences: " << kex_algorithms);
+    SSHFS_LOG("  [KEX] Set KEX preferences: " << kex_algorithms);
+  }
+
+  // Set preferred host key algorithms
+  const char *hostkey_algorithms =
+      "ssh-ed25519,"
+      "ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,"
+      "rsa-sha2-256,rsa-sha2-512,ssh-rsa";
+  int hk_rc = libssh2_session_method_pref(session, LIBSSH2_METHOD_HOSTKEY,
+                                          hostkey_algorithms);
+  if (hk_rc != 0) {
+    SSHFS_LOG("  [HOSTKEY] Warning: Could not set host key preferences (rc="
+              << hk_rc << ")");
+  } else {
+    SSHFS_LOG("  [HOSTKEY] Set host key preferences: " << hostkey_algorithms);
+  }
+
+  // Enable libssh2 protocol-level trace when debug logging is on
+  if (IsDebugLoggingEnabled()) {
+    libssh2_trace(session, ~0);
+    libssh2_trace_sethandler(
+        session, nullptr,
+        [](LIBSSH2_SESSION *, void *, const char *data, size_t len) {
+          fprintf(stderr, "  [SSH2] %.*s\n", (int)len, data);
+        });
+  }
+
+  // Wait for SSH server banner before handshake.
+  // After connect(), the server sends its version string (e.g. "SSH-2.0-...").
+  // libssh2_session_handshake() expects this banner to be available on the
+  // socket. In tight execution contexts (like DuckDB's engine), the handshake
+  // can be called before the banner arrives, causing KEX error -8.
+  // poll() is used instead of select() to avoid the FD_SETSIZE limit.
+  {
+    struct pollfd pfd = {sock, POLLIN, 0};
+    int poll_rc = poll(&pfd, 1, params.timeout_seconds * 1000);
+    if (poll_rc < 0) {
+      CleanupSession();
+      throw IOException(
+          "poll() failed waiting for SSH banner from %s:%d (errno: %d, %s)",
+          params.hostname.c_str(), params.port, errno, strerror(errno));
+    }
+    if (poll_rc == 0) {
+      CleanupSession();
+      throw IOException(
+          "SSH server at %s:%d did not send banner within %d seconds",
+          params.hostname.c_str(), params.port, params.timeout_seconds);
+    }
+    SSHFS_LOG("  [HANDSHAKE] Server banner ready, proceeding with handshake");
   }
 
   // Perform SSH handshake
