@@ -1,44 +1,38 @@
 #pragma once
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/logging/log_type.hpp"
+#include "duckdb/logging/logger.hpp"
 #include <chrono>
-#include <cstdlib>
-#include <iostream>
 #include <libssh2.h>
 #include <libssh2_sftp.h>
+#include <sstream>
 #include <string>
 
 namespace duckdb {
 
-// Thread-local debug flag (set from sshfs_debug_logging setting)
-extern thread_local bool g_sshfs_debug_enabled;
+// Custom log type for SSHFS extension — filterable via duckdb_logs() WHERE type
+// = 'SSHFS'
+class SSHFSLogType : public LogType {
+public:
+  static constexpr const char *NAME = "SSHFS";
+  static constexpr LogLevel LEVEL = LogLevel::LOG_DEBUG;
 
-// Simple logging configuration
-// Checks both sshfs_debug_logging setting (via thread_local) and SSHFS_DEBUG
-// env var (for backward compatibility)
-inline bool IsDebugLoggingEnabled() {
-  // Check thread-local flag first (from setting)
-  if (g_sshfs_debug_enabled) {
-    return true;
-  }
+  SSHFSLogType() : LogType(NAME, LEVEL) {}
 
-  // Fall back to environment variable for backward compatibility
-  static bool checked = false;
-  static bool enabled = false;
+  static string ConstructLogMessage(const string &msg) { return msg; }
+};
 
-  if (!checked) {
-    const char *env = std::getenv("SSHFS_DEBUG");
-    enabled = (env != nullptr && std::string(env) == "1");
-    checked = true;
-  }
-
-  return enabled;
-}
-
-#define SSHFS_LOG(msg)                                                         \
+// Log via DuckDB logger (no-op if logger is null)
+#define SSHFS_LOG(LOGGER, msg)                                                 \
   do {                                                                         \
-    if (IsDebugLoggingEnabled()) {                                             \
-      std::cerr << msg << std::endl;                                           \
+    if (LOGGER) {                                                              \
+      if ((LOGGER)->ShouldLog(SSHFSLogType::NAME, SSHFSLogType::LEVEL)) {      \
+        std::ostringstream oss_;                                               \
+        oss_ << msg;                                                           \
+        (LOGGER)->WriteLog(SSHFSLogType::NAME, SSHFSLogType::LEVEL,            \
+                           oss_.str());                                        \
+      }                                                                        \
     }                                                                          \
   } while (0)
 
@@ -60,19 +54,17 @@ inline std::string ShellQuote(const std::string &s) {
 // RAII helper for timing operations with automatic logging
 class ScopedTimer {
 public:
-  ScopedTimer(const std::string &tag, const std::string &description)
-      : tag(tag), description(description),
+  ScopedTimer(shared_ptr<Logger> logger, const std::string &tag,
+              const std::string &description)
+      : logger(std::move(logger)), tag(tag), description(description),
         start(std::chrono::steady_clock::now()) {}
 
   ~ScopedTimer() {
-    if (IsDebugLoggingEnabled()) {
-      auto end = std::chrono::steady_clock::now();
-      auto ms =
-          std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
-              .count();
-      std::cerr << "  [" << tag << "] " << description << ": " << ms << "ms"
-                << std::endl;
-    }
+    auto end = std::chrono::steady_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+                  .count();
+    SSHFS_LOG(logger,
+              "  [" << tag << "] " << description << ": " << ms << "ms");
   }
 
   // Get elapsed time without destroying the timer
@@ -83,6 +75,7 @@ public:
   }
 
 private:
+  shared_ptr<Logger> logger;
   std::string tag;
   std::string description;
   std::chrono::steady_clock::time_point start;
@@ -91,26 +84,24 @@ private:
 // RAII helper for timing with throughput calculation
 class ThroughputTimer {
 public:
-  ThroughputTimer(const std::string &tag, const std::string &description,
-                  size_t bytes)
-      : tag(tag), description(description), bytes(bytes),
-        start(std::chrono::steady_clock::now()) {}
+  ThroughputTimer(shared_ptr<Logger> logger, const std::string &tag,
+                  const std::string &description, size_t bytes)
+      : logger(std::move(logger)), tag(tag), description(description),
+        bytes(bytes), start(std::chrono::steady_clock::now()) {}
 
   ~ThroughputTimer() {
-    if (IsDebugLoggingEnabled()) {
-      auto end = std::chrono::steady_clock::now();
-      auto ms =
-          std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
-              .count();
-      double mb = bytes / (1024.0 * 1024.0);
-      double mb_per_sec = ms > 0 ? (mb / (ms / 1000.0)) : 0;
-      std::cerr << "  [" << tag << "] " << description << " " << mb
-                << " MB: " << ms << "ms (" << mb_per_sec << " MB/s)"
-                << std::endl;
-    }
+    auto end = std::chrono::steady_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
+                  .count();
+    double mb = bytes / (1024.0 * 1024.0);
+    double mb_per_sec = ms > 0 ? (mb / (ms / 1000.0)) : 0;
+    SSHFS_LOG(logger, "  [" << tag << "] " << description << " " << mb
+                            << " MB: " << ms << "ms (" << mb_per_sec
+                            << " MB/s)");
   }
 
 private:
+  shared_ptr<Logger> logger;
   std::string tag;
   std::string description;
   size_t bytes;

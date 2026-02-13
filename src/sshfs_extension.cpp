@@ -3,8 +3,10 @@
 #include "sshfs_extension.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/logging/log_manager.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "ssh_helpers.hpp"
 #include "ssh_secrets.hpp"
 #include "sshfs_filesystem.hpp"
 
@@ -15,11 +17,12 @@ static void LoadInternal(ExtensionLoader &loader) {
   auto &db = loader.GetDatabaseInstance();
   auto &config = DBConfig::GetConfig(db);
 
-  // Register SSHFS-specific configuration settings
-  config.AddExtensionOption("sshfs_debug_logging",
-                            "Enable debug logging for SSHFS operations",
-                            LogicalType::BOOLEAN, Value(false));
+  // Register custom SSHFS log type for structured logging
+  // Users can query: SELECT * FROM duckdb_logs() WHERE type = 'SSHFS';
+  auto &log_manager = db.GetLogManager();
+  log_manager.RegisterLogType(make_uniq<SSHFSLogType>());
 
+  // Register SSHFS-specific configuration settings
   config.AddExtensionOption("sshfs_timeout_seconds",
                             "Timeout in seconds for SSH operations (default: "
                             "300 = 5 minutes)",

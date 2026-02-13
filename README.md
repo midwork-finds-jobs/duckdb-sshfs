@@ -219,7 +219,6 @@ ssh-add ~/.ssh/your_key
 - `sshfs_max_concurrent_uploads`: Max parallel chunk uploads (default: 2)
 - `ssh_keepalive`: Keepalive interval in seconds, 0 to disable (default: 60)
 - `sshfs_strict_crypto`: Restrict SSH to non-NIST algorithms only (default: false)
-- `sshfs_debug_logging`: Enable debug logging (default: false)
 
 #### Strict Crypto Mode
 
@@ -236,6 +235,21 @@ SET sshfs_strict_crypto = true;
 **Removed:** ecdh-sha2-nistp256/384/521, ecdsa-sha2-nistp256/384/521, diffie-hellman-group14-sha1, ssh-rsa
 
 This is useful if you want to avoid NIST curves (which have theoretical concerns due to NSA involvement in their design) or legacy algorithms. Note that enabling this may prevent connections to servers that only support NIST algorithms.
+
+#### Debug Logging
+
+SSHFS uses DuckDB's native logging system. Enable debug logs and query them via `duckdb_logs()`:
+
+```sql
+CALL enable_logging(level := 'debug');
+LOAD sshfs;
+
+-- Perform operations...
+SELECT * FROM 'sshfs://storagebox/data.parquet' LIMIT 1;
+
+-- Query SSHFS-specific logs
+SELECT * FROM duckdb_logs() WHERE type = 'SSHFS';
+```
 
 ## Server Compatibility
 

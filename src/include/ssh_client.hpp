@@ -1,6 +1,7 @@
 #pragma once
 
 #include "duckdb.hpp"
+#include "duckdb/logging/logger.hpp"
 #include <condition_variable>
 #include <libssh2.h>
 #include <libssh2_sftp.h>
@@ -22,8 +23,8 @@ struct SSHConnectionParams {
   // Authentication
   bool use_agent = false; // Explicitly use SSH agent for authentication
 
-  // Debug logging
-  bool debug_logging = false;
+  // DuckDB logger (optional — no-op if null)
+  shared_ptr<Logger> logger;
 
   // Crypto policy
   bool strict_crypto = false; // Restrict to non-NIST algorithms only
