@@ -42,6 +42,21 @@ inline bool IsDebugLoggingEnabled() {
     }                                                                          \
   } while (0)
 
+// Shell-quote a string for safe use in SSH command arguments.
+// Wraps in single quotes and escapes embedded single quotes: ' → '\''
+inline std::string ShellQuote(const std::string &s) {
+  std::string result = "'";
+  for (char c : s) {
+    if (c == '\'') {
+      result += "'\\''";
+    } else {
+      result += c;
+    }
+  }
+  result += "'";
+  return result;
+}
+
 // RAII helper for timing operations with automatic logging
 class ScopedTimer {
 public:

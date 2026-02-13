@@ -212,8 +212,30 @@ ssh-add ~/.ssh/your_key
 
 ### Configuration Options
 
-- `sshfs_chunk_size`: Size of each chunk in bytes (default: 50MB)
-- `sshfs_timeout`: Connection timeout in seconds (default: 30)
+- `sshfs_chunk_size_mb`: Chunk size in MB for uploads (default: 50)
+- `sshfs_timeout_seconds`: Connection timeout in seconds (default: 300)
+- `sshfs_max_retries`: Maximum connection retry attempts (default: 3)
+- `sshfs_initial_retry_delay_ms`: Initial retry delay in ms with exponential backoff (default: 1000)
+- `sshfs_max_concurrent_uploads`: Max parallel chunk uploads (default: 2)
+- `ssh_keepalive`: Keepalive interval in seconds, 0 to disable (default: 60)
+- `sshfs_strict_crypto`: Restrict SSH to non-NIST algorithms only (default: false)
+- `sshfs_debug_logging`: Enable debug logging (default: false)
+
+#### Strict Crypto Mode
+
+When `sshfs_strict_crypto` is enabled, only non-NIST cryptographic algorithms are used for SSH negotiation:
+
+```sql
+SET sshfs_strict_crypto = true;
+```
+
+**KEX (Key Exchange):** curve25519-sha256, DH group14-sha256, group-exchange-sha256, group16-sha512, group18-sha512
+
+**Host Key:** ssh-ed25519, rsa-sha2-256, rsa-sha2-512
+
+**Removed:** ecdh-sha2-nistp256/384/521, ecdsa-sha2-nistp256/384/521, diffie-hellman-group14-sha1, ssh-rsa
+
+This is useful if you want to avoid NIST curves (which have theoretical concerns due to NSA involvement in their design) or legacy algorithms. Note that enabling this may prevent connections to servers that only support NIST algorithms.
 
 ## Server Compatibility
 

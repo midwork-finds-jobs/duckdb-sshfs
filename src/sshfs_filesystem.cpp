@@ -83,15 +83,8 @@ void SSHFSFileSystem::Truncate(FileHandle &handle, int64_t new_size) {
   // Flush any pending writes before truncating
   sshfs_handle.Flush();
 
-  if (!client->SupportsCommands()) {
-    // Use SFTP-only truncate
-    client->TruncateFileSFTP(remote_path, new_size);
-  } else {
-    // Use SSH command for faster execution
-    std::string command =
-        "truncate -s " + std::to_string(new_size) + " " + remote_path;
-    client->ExecuteCommand(command);
-  }
+  // Always use SFTP for truncate (avoids command injection via remote_path)
+  client->TruncateFileSFTP(remote_path, new_size);
 }
 
 void SSHFSFileSystem::FileSync(FileHandle &handle) {
@@ -164,14 +157,8 @@ void SSHFSFileSystem::CreateDirectory(const string &directory,
     client->Connect();
   }
 
-  if (!client->SupportsCommands()) {
-    // Use SFTP-only recursive directory creation
-    client->CreateDirectorySFTP(params.remote_path);
-  } else {
-    // Use SSH command for faster execution
-    std::string command = "mkdir -p " + params.remote_path;
-    client->ExecuteCommand(command);
-  }
+  // Always use SFTP for directory creation (avoids command injection via path)
+  client->CreateDirectorySFTP(params.remote_path);
 }
 
 bool SSHFSFileSystem::DirectoryExists(const string &directory,
@@ -203,14 +190,8 @@ void SSHFSFileSystem::RemoveDirectory(const string &directory,
     client->Connect();
   }
 
-  if (!client->SupportsCommands()) {
-    // Use SFTP-only directory removal
-    client->RemoveDirectorySFTP(params.remote_path);
-  } else {
-    // Use SSH command
-    std::string command = "rmdir " + params.remote_path;
-    client->ExecuteCommand(command);
-  }
+  // Always use SFTP for directory removal (avoids command injection via path)
+  client->RemoveDirectorySFTP(params.remote_path);
 }
 
 vector<OpenFileInfo> SSHFSFileSystem::Glob(const string &path,
@@ -501,6 +482,11 @@ SSHConnectionParams SSHFSFileSystem::ParseURL(const string &path,
         params.max_concurrent_uploads =
             static_cast<size_t>(value.GetValue<int64_t>());
       }
+    }
+
+    if (FileOpener::TryGetCurrentSetting(opener, "sshfs_strict_crypto",
+                                         value)) {
+      params.strict_crypto = value.GetValue<bool>();
     }
   }
 
