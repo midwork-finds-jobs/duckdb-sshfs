@@ -40,7 +40,7 @@ jobs:
         run: sudo apt-get update -y -qq && sudo apt-get install -y -qq ninja-build
 
       - name: Setup Ccache
-        uses: hendrikmuhs/ccache-action@97635eac5f893a37d7025e081038e3629f185c26 #main
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 #main
         with:
           key: ${{ github.job }}
           save: ${{ github.ref == 'refs/heads/main' || github.repository != 'duckdb/duckdb-sshfs' }}
