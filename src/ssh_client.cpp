@@ -8,6 +8,7 @@
 #include <iostream>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sstream>
 #include <sys/socket.h>
 #include <thread>
@@ -196,18 +197,37 @@ void SSHClient::InitializeSession() {
 
   // Set preferred KEX algorithms — include ECDH + curve25519 for modern servers.
   // See: https://github.com/midwork-finds-jobs/duckdb-sshfs/issues/7
-  libssh2_session_method_pref(session, LIBSSH2_METHOD_KEX,
+  // Modern algorithms listed first, with diffie-hellman-group-exchange-sha256
+  // retained for compatibility with older servers that don't support ECDH.
+  const char *kex_algorithms =
     "curve25519-sha256,curve25519-sha256@libssh.org,"
     "ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,"
     "diffie-hellman-group14-sha256,"
     "diffie-hellman-group16-sha512,"
     "diffie-hellman-group18-sha512,"
-    "diffie-hellman-group14-sha1");
+    "diffie-hellman-group-exchange-sha256,"
+    "diffie-hellman-group14-sha1";
+  int kex_rc =
+      libssh2_session_method_pref(session, LIBSSH2_METHOD_KEX, kex_algorithms);
+  if (kex_rc != 0) {
+    SSHFS_LOG("  [KEX] Warning: Could not set KEX algorithm preferences (rc="
+              << kex_rc << ")");
+  } else {
+    SSHFS_LOG("  [KEX] Set KEX algorithm preferences: " << kex_algorithms);
+  }
 
   // Set preferred host key algorithms
-  libssh2_session_method_pref(session, LIBSSH2_METHOD_HOSTKEY,
+  const char *hostkey_algorithms =
     "ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,"
-    "rsa-sha2-256,rsa-sha2-512,ssh-rsa");
+    "rsa-sha2-256,rsa-sha2-512,ssh-rsa";
+  int hk_rc =
+      libssh2_session_method_pref(session, LIBSSH2_METHOD_HOSTKEY, hostkey_algorithms);
+  if (hk_rc != 0) {
+    SSHFS_LOG("  [KEX] Warning: Could not set host key algorithm preferences (rc="
+              << hk_rc << ")");
+  } else {
+    SSHFS_LOG("  [KEX] Set host key algorithm preferences: " << hostkey_algorithms);
+  }
 
   if (IsDebugLoggingEnabled()) {
     // Enable libssh2 trace for protocol-level debugging
@@ -223,20 +243,27 @@ void SSHClient::InitializeSession() {
   // "SSH-2.0-OpenSSH_8.4p1"). libssh2_session_handshake() can fail with
   // KEX error -8 if the banner hasn't arrived yet — this happens when the
   // extension runs inside DuckDB's execution engine where socket timing
-  // differs from standalone programs. Using select() to wait for readable
+  // differs from standalone programs. Using poll() to wait for readable
   // data ensures the banner is available before the handshake begins.
+  //
+  // Note: poll() is used instead of select() because select()'s FD_SET
+  // macro causes undefined behavior when the fd >= FD_SETSIZE (typically
+  // 1024), which can happen in long-running DuckDB processes.
   {
-    fd_set fds;
-    struct timeval tv;
-    FD_ZERO(&fds);
-    FD_SET(sock, &fds);
-    tv.tv_sec = params.timeout_seconds;
-    tv.tv_usec = 0;
-    int sel = select(sock + 1, &fds, NULL, NULL, &tv);
-    if (sel <= 0) {
+    struct pollfd pfd;
+    pfd.fd = sock;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    int poll_rc = poll(&pfd, 1, params.timeout_seconds * 1000);
+    if (poll_rc <= 0) {
       CleanupSession();
       throw IOException("SSH server at %s:%d did not send banner within %d seconds",
                         params.hostname.c_str(), params.port, params.timeout_seconds);
+    }
+    if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+      CleanupSession();
+      throw IOException("SSH server at %s:%d: socket error while waiting for banner",
+                        params.hostname.c_str(), params.port);
     }
     SSHFS_LOG("  [HANDSHAKE] Server banner ready, proceeding with handshake");
   }
