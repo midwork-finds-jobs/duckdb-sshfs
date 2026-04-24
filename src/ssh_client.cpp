@@ -199,13 +199,23 @@ void SSHClient::InitializeSession() {
   //
   // When strict_crypto is enabled, only non-NIST algorithms are used:
   // - Removes ecdh-sha2-nistp*, diffie-hellman-group14-sha1
+  //
+  // IMPORTANT: always include the SSH extension-negotiation pseudo-algorithms
+  // as the last entries. When libssh2_session_method_pref() is called with a
+  // custom KEX list, libssh2 ≤1.11.0 silently drops these indicators from the
+  // client's KEXINIT (libssh2 bug #1326, fixed in 1.11.1). Without them the
+  // server's kex-strict-s advertisement causes a sequence-number mismatch and
+  // the handshake fails with LIBSSH2_ERROR_KEX_FAILURE (-8).
+  // Explicitly including them here is the belt-and-suspenders workaround.
+  // See: https://github.com/libssh2/libssh2/issues/1326
   const char *kex_algorithms;
   if (params.strict_crypto) {
     kex_algorithms = "curve25519-sha256,curve25519-sha256@libssh.org,"
                      "diffie-hellman-group14-sha256,"
                      "diffie-hellman-group-exchange-sha256,"
                      "diffie-hellman-group16-sha512,"
-                     "diffie-hellman-group18-sha512";
+                     "diffie-hellman-group18-sha512,"
+                     "ext-info-c,kex-strict-c-v00@openssh.com";
   } else {
     kex_algorithms = "curve25519-sha256,curve25519-sha256@libssh.org,"
                      "ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,"
@@ -213,7 +223,8 @@ void SSHClient::InitializeSession() {
                      "diffie-hellman-group-exchange-sha256,"
                      "diffie-hellman-group16-sha512,"
                      "diffie-hellman-group18-sha512,"
-                     "diffie-hellman-group14-sha1";
+                     "diffie-hellman-group14-sha1,"
+                     "ext-info-c,kex-strict-c-v00@openssh.com";
   }
   int kex_rc =
       libssh2_session_method_pref(session, LIBSSH2_METHOD_KEX, kex_algorithms);
