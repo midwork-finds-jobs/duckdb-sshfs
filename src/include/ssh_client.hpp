@@ -25,6 +25,9 @@ struct SSHConnectionParams {
   // Debug logging
   bool debug_logging = false;
 
+  // Crypto policy
+  bool strict_crypto = false; // Restrict to non-NIST algorithms only
+
   // Connection tuning
   int timeout_seconds = 300; // 5 minutes for long uploads
   int max_retries = 3;       // Maximum connection retry attempts
@@ -59,8 +62,6 @@ public:
   // File operations
   void UploadChunk(const std::string &remote_path, const char *data,
                    size_t size, bool append = false);
-  void AppendChunk(const std::string &remote_path,
-                   const std::string &chunk_path);
   void RemoveFile(const std::string &remote_path);
   void RenameFile(const std::string &source_path,
                   const std::string &target_path);

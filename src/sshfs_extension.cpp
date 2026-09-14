@@ -54,6 +54,13 @@ static void LoadInternal(ExtensionLoader &loader) {
       "Prevents idle connection timeouts and improves performance.",
       LogicalType::BIGINT, Value::BIGINT(60));
 
+  config.AddExtensionOption(
+      "sshfs_strict_crypto",
+      "Restrict SSH to non-NIST algorithms only (curve25519, ed25519, DH "
+      "group14+). Removes ecdh-sha2-nistp*, ecdsa-sha2-nistp*, and legacy "
+      "algorithms (default: false)",
+      LogicalType::BOOLEAN, Value(false));
+
   auto &fs = db.GetFileSystem();
   fs.RegisterSubSystem(make_uniq<SSHFSFileSystem>());
 
