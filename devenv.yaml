@@ -13,3 +13,6 @@ inputs:
 # If you have more than one devenv you can merge them
 #imports:
 # - ./backend
+  git-hooks:
+    url: github:cachix/git-hooks.nix
+    flake: false
