@@ -5,8 +5,8 @@ set(TARGET_NAME sshfs)
 
 project(${TARGET_NAME})
 
-# DuckDB's extension distribution supports vcpkg. As such, dependencies can be added in ./vcpkg.json and then
-# used in cmake with find_package.
+# DuckDB's extension distribution supports vcpkg. As such, dependencies can be
+# added in ./vcpkg.json and then used in cmake with find_package.
 if(CLANG_TIDY)
   find_package(OpenSSL)
   find_package(Libssh2)
@@ -21,21 +21,18 @@ set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 include_directories(src/include)
 
 set(EXTENSION_SOURCES
-    src/sshfs_extension.cpp
-    src/sshfs_filesystem.cpp
-    src/sshfs_file_handle.cpp
-    src/ssh_client.cpp
-    src/ssh_secrets.cpp
-    src/ssh_config.cpp
-)
+    src/sshfs_extension.cpp src/sshfs_filesystem.cpp src/sshfs_file_handle.cpp
+    src/ssh_client.cpp src/ssh_secrets.cpp src/ssh_config.cpp)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 
 # Link OpenSSL and libssh2 in both the static library as the loadable extension
 if(NOT CLANG_TIDY)
-  target_link_libraries(${EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto Libssh2::libssh2)
-  target_link_libraries(${LOADABLE_EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto Libssh2::libssh2)
+  target_link_libraries(${EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto
+                        Libssh2::libssh2)
+  target_link_libraries(${LOADABLE_EXTENSION_NAME} OpenSSL::SSL OpenSSL::Crypto
+                        Libssh2::libssh2)
 endif()
 
 install(

@@ -14,7 +14,7 @@ CreateSSHSecretFromConfig(ClientContext &context, CreateSecretInput &input) {
 
   // Add all the options from the input to the secret
   for (const auto &option : input.options) {
-    secret->secret_map[option.first] = option.second;
+    secret->secret_map[Identifier(option.first)] = option.second;
   }
 
   return std::move(secret);
