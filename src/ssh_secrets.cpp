@@ -17,6 +17,9 @@ CreateSSHSecretFromConfig(ClientContext &context, CreateSecretInput &input) {
     secret->secret_map[Identifier(option.first)] = option.second;
   }
 
+  // Hide credentials in duckdb_secrets() output
+  secret->redact_keys = {"password"};
+
   return std::move(secret);
 }
 
