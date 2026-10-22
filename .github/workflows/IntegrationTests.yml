@@ -24,6 +24,8 @@ jobs:
       GEN: ninja
       VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
       VCPKG_TARGET_TRIPLET: x64-linux
+      # run-vcpkg >=11.6 defaults to x-gha cache, which needs ACTIONS_CACHE_URL (gone with GHA cache v2)
+      VCPKG_BINARY_SOURCES: clear
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 #v4
