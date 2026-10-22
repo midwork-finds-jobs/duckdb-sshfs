@@ -27,7 +27,7 @@ void CreateSSHSecretFunctions::Register(ExtensionLoader &loader) {
   // Register SSH secret type
   SecretType secret_type;
   secret_type.name = "ssh";
-  secret_type.deserializer = nullptr;
+  secret_type.deserializer = KeyValueSecret::Deserialize<KeyValueSecret>;
   secret_type.default_provider = "config";
 
   loader.RegisterSecretType(secret_type);
