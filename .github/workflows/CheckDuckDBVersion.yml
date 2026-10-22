@@ -4,31 +4,59 @@ on:
     - cron: '0 9 * * MON'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   check-version:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
-      - name: Get versions
-        id: versions
-        run: |
-          CURRENT=$(grep -oP 'duckdb_version: \Kv[\d.]+' .github/workflows/MainDistributionPipeline.yml | head -1)
-          LATEST=$(gh release list --repo duckdb/duckdb --limit 1 --json tagName -q '.[0].tagName')
-          echo "current=$CURRENT" >> $GITHUB_OUTPUT
-          echo "latest=$LATEST" >> $GITHUB_OUTPUT
+      - name: Compare stable branch pin with latest DuckDB release
         env:
           GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
 
-      - name: Create issue if outdated
-        if: steps.versions.outputs.current != steps.versions.outputs.latest
-        run: |
-          EXISTING=$(gh issue list --label dependencies --json title -q '.[].title' | grep -c "Update DuckDB" || true)
-          if [ "$EXISTING" = "0" ]; then
-            gh issue create \
-              --title "Update DuckDB to ${{ steps.versions.outputs.latest }}" \
-              --body "Current: ${{ steps.versions.outputs.current }}\nLatest: ${{ steps.versions.outputs.latest }}" \
-              --label "dependencies"
+          ensure_issue() {
+            local title="$1" body="$2"
+            if gh issue list --state open --limit 200 --json title -q '.[].title' | grep -qxF "$title"; then
+              echo "Issue already open: $title"
+              return
+            fi
+            gh issue create --title "$title" --body "$body" --label dependencies \
+              || gh issue create --title "$title" --body "$body"
+          }
+
+          LATEST=$(gh release list --repo duckdb/duckdb --exclude-drafts --exclude-pre-releases --limit 1 --json tagName -q '.[0].tagName')
+          LATEST_MM=$(echo "$LATEST" | sed -nE 's/^v([0-9]+\.[0-9]+)\..*/\1/p')
+          NEWEST=$( (ls .github/workflows/scheduled-*.yml 2>/dev/null || true) | sed -nE 's/.*scheduled-([0-9]+\.[0-9]+)\.yml$/\1/p' | sort -V | tail -1)
+          echo "latest=$LATEST newest_stable_line=${NEWEST:-none}"
+
+          if [ -z "$LATEST_MM" ]; then
+            echo "::warning::Could not parse latest release tag '$LATEST'"
+            exit 0
           fi
-        env:
-          GH_TOKEN: ${{ github.token }}
+
+          if [ ! -f ".github/workflows/scheduled-${LATEST_MM}.yml" ]; then
+            ensure_issue "Create v${LATEST_MM} branch for DuckDB ${LATEST}" \
+              "DuckDB ${LATEST} released. Newest stable line here: v${NEWEST:-none}. Create branch v${LATEST_MM} pinned to ${LATEST} and add .github/workflows/scheduled-${LATEST_MM}.yml."
+            exit 0
+          fi
+
+          CURRENT=$( (gh api -H "Accept: application/vnd.github.raw" \
+            "repos/${GITHUB_REPOSITORY}/contents/.github/workflows/MainDistributionPipeline.yml?ref=v${LATEST_MM}" 2>/dev/null || true) \
+            | (grep -oP 'duckdb_version: \Kv[\d.]+' || true) | head -1)
+          echo "v${LATEST_MM} pins: ${CURRENT:-none}"
+
+          if [ -z "$CURRENT" ]; then
+            echo "::warning::No pinned duckdb_version found on branch v${LATEST_MM}"
+            exit 0
+          fi
+
+          if [ "$CURRENT" != "$LATEST" ]; then
+            ensure_issue "Update DuckDB to ${LATEST} on v${LATEST_MM}" \
+              "Branch v${LATEST_MM} pins ${CURRENT}; latest release is ${LATEST}."
+          fi
